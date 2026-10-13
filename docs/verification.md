@@ -2,6 +2,52 @@
 
 **验证日期：2026-10-13。** Windows 本地网关与 Web 管理台；范围依据为 [设计](design.md)、[初始实施计划](implementation-plan.md) 与 [管理台计划](web-console-plan.md)。本文件区分代码行为证据和真实服务验收，不把模拟结果写成账号或客户端成功。
 
+## 密钥保存与分批提交前回归
+
+生成的网关密钥与鉴权哈希在同一加密事务中保存；管理会话通过 no-store `GET /admin/api/key` 读取，界面自动填充、默认隐藏，支持查看和复制。旧哈希密钥继续有效，不自动轮换；普通状态不包含密钥。
+
+提交前重新执行：
+
+- 设置 `CHATPASS_BROWSER_TEST=1` 后，`uv run --locked pytest -q`：**705 passed, 2 skipped**，43.90 秒。
+- `uv run --locked ruff check src tests`：**All checks passed**；`git diff --check` 成功。
+- 加密存储测试覆盖重新打开存储后的读取、磁盘不含明文、轮换后旧密钥失效、旧哈希状态不变和不匹配密钥拒绝读取。
+- 管理接口测试覆盖未登录／过期管理会话、错误 Host／Origin、网关 Bearer 不能读取密钥、no-store 和净化存储错误。
+- 隔离 Edge 回归覆盖自动读取、默认隐藏、键盘显示切换、复制及失败提示、刷新后再次读取、离开页面清除和窄屏布局。
+
+上游调用均为替身，密钥使用临时加密目录及内存 keyring；不是实际账号／客户端验收。两个跳过项为原生 keyring 和分发 opt-in，未声称其已验证。
+
+## SIWC 生命周期跟进：历史本地验证
+
+本轮完成候选隔离、显式退出／撤销、账号更换、安全 SIWC 错误、返回登录／手动链接、身份与计划权限分离、刷新窗口及预算提示。最终本地执行（2026-10-13）：
+
+- `uv run --locked pytest -q`：**681 passed, 3 skipped**，38.69 秒。
+- `uv run --locked ruff check src tests`：**All checks passed**；`git diff --check` 成功。
+- 单独启用隔离 headless Edge 回归：**1 passed**，7.83 秒；覆盖首次确认取消不提交、身份未获计划权限、刷新等待与待验证候选组合、短期链接清除、退出／换账号及过期管理会话恢复。
+- `uv run --locked chatpass logout --help` 成功，包含显式 `--new-account`；此命令只检查帮助，未执行退出。
+- 普通测试仍跳过原生 keyring、浏览器和分发 opt-in；浏览器单独执行。没有重新验证 native keyring／打包安装，也未启动或更改真实网关／客户端配置。
+- 分阶段独立只读规范／安全审查及质量复审关闭了三项确定问题：有效旧 access 的 30 秒错误门槛、退出后管理会话失效导致 busy 卡死、HTTP 错误诊断读取覆盖原 429/503；另修复待验证候选与旧刷新窗口冲突。审查者未自行执行本轮完整测试，运行证据来自主执行者。
+
+| 新增证据 | 证明的本地行为 |
+| --- | --- |
+| [退出测试](../tests/test_logout.py) | 空 200 撤销、受限发现、不重放、远端失败仍本地清除、正常／新账号绑定、锁与并发刷新、CSRF／CLI |
+| [安全错误基础](../tests/test_upstream_errors.py) / [集成错误测试](../tests/test_siwc_errors.py) | 字段白名单、16 KiB／250 ms、压缩／慢读／已消费回退、HTTP 状态／Retry-After、SSE 与 Chat／非流式错误保真 |
+| [返回登录](../tests/test_returning_login.py) | 身份 hint 加密、自动浏览器与无 hint 手动链接、短期管理会话能力、不泄漏普通状态 |
+| [计划权限](../tests/test_plan_permission.py) | 实签测试 JWT、仅身份不是授权、失败候选保留旧权威、不提前刷新、待验证晋升不依赖旧刷新窗口 |
+
+复现：
+
+```powershell
+uv run --locked ruff check src tests
+uv run --locked pytest -q
+$env:CHATPASS_BROWSER_TEST='1'
+uv run --locked pytest tests/test_web_browser.py -q
+$env:CHATPASS_BROWSER_TEST=''
+uv run --locked chatpass logout --help
+git diff --check
+```
+
+**证据边界：** 所有上游授权／撤销／推理均为测试替身，状态为临时加密目录＋内存 keyring。真实 Edge 是浏览器执行证据，不是实际账号授权。没有 stage／commit／push／发布，也不把保留的并行工作归为本任务成果。历史有限 DSH 实测仍有效，但不能代表本次新版完整验收；Hermes/OpenClaw 未测、旧 DSH 会话原因及真实空终帧聚合缺口未解决。最高价值下一步是按 [客户端清单](clients.md#siwc-生命周期由用户参与的手动验收) 由用户授权逐版本验证，先原生流式，不能自动消费计划额度。
+
 ## 历史验证结果（Web 管理台初始实现）
 
 - Windows / Python 3.11.9，最终全量普通测试：**258 passed, 2 skipped**，17.67 秒；跳过项是显式可选的原生 keyring 与真实浏览器测试。

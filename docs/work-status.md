@@ -1,6 +1,14 @@
 # Implementation checkpoints
 
-## Follow-up: protocol compatibility adapters
+## Follow-up: SIWC lifecycle (local implementation complete)
+
+Approved narrow scope implemented at the existing credential/storage/network owners: candidate isolation; explicit CLI/console logout and normal-vs-new-account registration handling; bounded safe HTTP/SSE errors; returning hints and authenticated hint-free continuation links; verified identity without plan permission; refresh-wait and shared-budget UI. One local account/public upstream/encrypted state/no uncertain refresh or inference replay/no billing fallback remain intact. Pre-existing/concurrent compatibility, stream diagnosis and client-key UI changes were preserved, not claimed as this task's contributions.
+
+Fresh final verification: **681 passed, 3 skipped** (38.69s); Ruff and whitespace clean; opt-in isolated Edge **1 passed** (7.83s); `logout --help` passed without performing logout. Independent read-only spec/security/quality reviews closed concrete lifecycle and deadline/combined-state recovery issues. [Verification](verification.md) records commands/test mapping; [console guide](web-console.md) and [client checks](clients.md) record user-controlled operational acceptance.
+
+No real authorization/revocation/inference, credential import, client reconfiguration, stage/commit/push or publication was performed in this lifecycle task. This is completion of the authorized local implementation/testing/documentation boundary, **not** real upstream/client acceptance or release readiness. Historical limited authorized DSH probes and fresh-conversation user success remain separate evidence. Hermes/OpenClaw, updated-version full DSH checks, old-conversation cause and the observed empty-terminal-output aggregation gap remain unverified/unresolved. The README's inherited absolute no-real-tests statement was corrected because those historical observations already existed; current mock success does not erase that distinction.
+
+## Follow-up: protocol compatibility adapters (historical)
 
 Authorized scope: Sub2API-inspired edge normalization without changing the public direct-sharing upstream or credential ownership. Added default compatible / optional strict mode (serve and web), Responses nonstream aggregation and Chat Completions streaming/nonstreaming bridge. Upstream remains public `/v1/responses`, forced streaming/store false; no private Codex route, retry, paid fallback, account pooling or real credential use. Native Responses preserves reasoning/custom tools; Chat's narrower documented subset fails explicitly for unsupported outputs. Removed the previous inline request normalizer in favor of one adapter owner; bounded transport/resource/error owners remain shared.
 
@@ -38,9 +46,9 @@ Detailed evidence and reproduction commands: [verification](verification.md). Th
 
 CLI-to-gateway argument wiring, finite JSON numbers, bounded verifier task lifetime, callback absolute deadline, atomic key initialization and mixed SSE terminators were corrected at their single canonical owners after reproducing failure. No parallel owner, plaintext fallback, paid fallback, old adapter or migration was introduced. The initial plan was reconciled to the verified preview protocol and encrypted quarantine checkpoint requirement; [protocol notes](protocol-notes.md) are the source observation record.
 
-## Unverified next step
+## Initial unverified next step (historical)
 
-No interactive login, real subscription call or existing-tool credential import was performed. Real official login, eligibility/quota and Hermes/OpenClaw/DeepSeek Harness compatibility require user-controlled authorization and client-version-specific tests in [client checks](clients.md). macOS/Linux system keyring has not been exercised. The project subsequently adopted MIT for original code and documentation; third-party and service permissions remain separate. Public/remote deployment is not supported; do not tunnel or reverse-proxy this local service.
+During the initial implementation, no interactive login, real subscription call or existing-tool credential import was performed. Real official login, eligibility/quota and Hermes/OpenClaw/DeepSeek Harness compatibility require user-controlled authorization and client-version-specific tests in [client checks](clients.md). macOS/Linux system keyring has not been exercised. The project subsequently adopted MIT for original code and documentation; third-party and service permissions remain separate. Public/remote deployment is not supported; do not tunnel or reverse-proxy this local service.
 
 Initial code/documentation work is complete within that boundary. Real-service acceptance still requires real login, model discovery and one short authorized Responses call, then each target client separately. Do not silently replace this evidence with an upstream/client compatibility claim.
 

@@ -10,7 +10,7 @@
 
 ChatPass is a local gateway for personal use. It uses the public Sign in with ChatGPT authorization flow to connect your own agent tools to subscription capabilities within the permissions granted. Clients need only a local API address and a separate gateway key, not your ChatGPT OAuth credentials.
 
-> **Status: initial implementation with mock testing; real accounts and Hermes / OpenClaw / DeepSeek Harness have not been tested.** Account eligibility, available models and quota depend on upstream authorization. A subscription is not unlimited usage or a general-purpose API entitlement. See [verification scope](docs/verification.md).
+> **Status: local mock validation is complete. Historical limited authorized diagnostics and user feedback established fresh DSH conversation success; full live acceptance of the updated version remains incomplete, and Hermes/OpenClaw are untested.** Account eligibility, available models and quota depend on upstream authorization. A subscription is not unlimited usage or a general-purpose API entitlement. See [verification scope](docs/verification.md).
 
 ## Quick start
 
@@ -69,7 +69,7 @@ uv run --locked --no-dev --system-certs chatpass status
 uv run --locked --no-dev --system-certs chatpass serve
 ```
 
-`key init` displays the key once. `login` opens the official authorization page; finish within 180 seconds, or use `login --no-browser` to open the authorization link yourself. `status` displays only non-sensitive state.
+`key init` generates and encrypts the key locally; authenticated console sessions can view or copy it later, masked by default. Legacy hash-only keys remain valid but cannot be recovered; rotate explicitly if lost. `login` opens the official authorization page; finish within 180 seconds, or use `login --no-browser` to open the authorization link yourself. `status` displays only non-sensitive state.
 
 `serve` runs only the API; `web` runs both the console and API. They share the default port, so **run one or the other**. Existing CLI authorization and keys also work with the console.
 
@@ -88,7 +88,7 @@ API: native streaming Responses
 
 If you changed the startup port, update the API address too. The gateway key **is not an OpenAI API key or OAuth token**: it works only through the running ChatPass gateway. Do not paste subscription credentials into clients or assume a model name without querying the catalog.
 
-The actual versions, provider API types and tool-call behavior of Hermes Agent, OpenClaw and DeepSeek Harness still need verification. The currently committed version supports only native streaming Responses, not Chat Completions-only clients. See the [client support matrix and acceptance steps](docs/clients.md).
+The current source supports streaming/nonstreaming Responses and Chat Completions; prefer native streaming Responses. Limited authorized probes and user feedback established fresh DSH conversation success, not universal client or protocol acceptance. A known empty-terminal-output aggregation gap remains unresolved. Verify Hermes, OpenClaw and DSH versions, histories and tool turns separately; see [client acceptance](docs/clients.md).
 
 ## How it differs from subscription relay platforms
 
@@ -100,20 +100,20 @@ The actual versions, provider API types and tool-call behavior of Hermes Agent, 
 | Upstream | Public `https://api.openai.com/v1/models` and `/v1/responses` | Some adapt the private Codex backend; a client-facing `/v1` address does not identify the upstream |
 | Audience | One person connecting their own local tools | Some are also personal proxies; others target multiple accounts, user key distribution and billing operations |
 
-For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) targets subscription quota distribution and management, including multiple accounts, user keys, billing and scheduling. ChatPass does not target that operating model. This does not imply that all subscription proxies use private interfaces, or constitute a blanket judgment about their security or legality. See [protocol notes](docs/protocol-notes.md) for authorization evidence and technical details.
+For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) targets subscription quota distribution and management, including multiple accounts, user keys, billing and scheduling. ChatPass does not target that operating model. This does not imply that all subscription proxies use private interfaces, or constitute a blanket judgment about their security or legality. Public SIWC is not an exclusive differentiator; this project prioritizes personal, local, single-account use and conservative credential lifecycle handling. See [protocol notes](docs/protocol-notes.md) for evidence and technical details.
 
 ## Limitations and security
 
 ### API limitations
 
-The currently committed version provides `GET /v1/models` and streaming `POST /v1/responses`. This is not a complete OpenAI API compatibility layer.
+The current source provides `GET /v1/models`, `POST /v1/responses` and `POST /v1/chat/completions`. It is not a complete OpenAI compatibility layer, a publication claim or universal live-client acceptance.
 
-- Requests default to `stream:true` with upstream `store:false`; `stream:false` is explicitly rejected.
-- Send full `input` history on each turn. `previous_response_id`, background work, server-state references and hosted tools are unsupported.
-- Function/custom tool calls and explicit results are preserved. `system` history items are unsupported; use `instructions` / `developer` semantics.
-- Unsupported fields such as `temperature` and `max_output_tokens` return a clear 400 rather than being silently dropped.
+- Both inference interfaces can stream or aggregate JSON. Upstream always uses `stream:true`, `store:false`; only `response.completed` proves success.
+- Send full history. `previous_response_id`, background work, server-state references and hosted tools are unsupported.
+- Native Responses preserves function/custom tools and opaque reasoning history; Chat has a narrower supported subset. `system` is normalized to `developer`.
+- Default compatible mode omits listed unsupported tuning fields and reports names in `X-ChatPass-Ignored-Fields`; omitted output limits are not enforced. Choose `--compatibility-mode strict` to reject them.
 
-A Chat Completions bridge, nonstreaming aggregation and parameter compatibility mode are under development and not yet included in the committed version. They are not released capabilities or guarantees of client compatibility.
+The observed case of output-item events followed by empty terminal `output` remains unresolved. Mock success does not prove complete live nonstreaming/Chat compatibility.
 
 ### Credential and access security
 
@@ -124,7 +124,16 @@ A Chat Completions bridge, nonstreaming aggregation and parameter compatibility 
 - Use the same data directory for all commands. Windows defaults to `%LOCALAPPDATA%\ChatPass`. Example override: `uv run chatpass --data-dir D:\ChatPassData serve --port 19841`.
 - ChatPass does not isolate malware running as the same OS user. Never publish keys, tokens, callback links or full conversations.
 
-### Recovery
+### Sign-in, sign-out and recovery
+
+Requests consume the budget shared with your ChatGPT plan, not unlimited API access. The console asks for first-use confirmation; actual permissions are granted on the official page. [Official usage](https://chatgpt.com/settings/usage) may reflect plan or app limits; local request counters are not token or billing quota.
+
+- Browser not opening: explicitly fetch a short-lived continuation link while login runs. It is management-session-only, cleared on expiry/completion, and contains no identity token; still do not share it.
+- Signed in without plan permission: only verified identity is retained encrypted, never used for inference or refresh. Reauthorization is your choice; failed candidates do not replace a valid saved grant.
+- Sign out: confirm in the console or run `uv run chatpass logout`. After attempting official revocation, local credentials are cleared; the gateway key, registration and account binding remain. If remote revocation is unconfirmed, disconnect in ChatGPT Settings. Admitted requests cannot be recalled.
+- Change account: explicitly use `uv run chatpass logout --new-account` or the console checkbox. Reset client/account binding while keeping the host ID and gateway key, then sign in manually.
+- `refresh_not_yet_allowed`: wait for the official refresh window and refresh status for updated timing. Validating a pending login candidate is not blocked by the old token's refresh window.
+
 
 - Authorization timeout or cancellation: run `login` again.
 - An uncertain refresh result or process exit during refresh: stop requests and sign in again to avoid reusing a rotated token. A durably saved token pending validation is only revalidated; the old refresh request is not repeated.

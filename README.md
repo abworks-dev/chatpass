@@ -10,7 +10,7 @@
 
 ChatPass 是个人自用的本地网关，通过 Sign in with ChatGPT 公开授权流程，让自己的 Agent 工具在获授权范围内使用订阅能力。客户端只需配置本地 API 地址和独立网关密钥，无需接触 ChatGPT OAuth 凭据。
 
-> **状态：初始实现，已进行模拟测试；真实账号和 Hermes / OpenClaw / DeepSeek Harness 尚未实测。** 账号资格、可用模型与额度以上游实际授权为准，订阅不等于无限或通用 API 套餐。验证范围见 [验证说明](docs/verification.md)。
+> **状态：本地模拟验证已完成；历史有限授权诊断及用户反馈确认 DSH 新会话可用，但新版完整真实客户端验收未完成，Hermes / OpenClaw 未实测。** 账号资格、可用模型与额度以上游实际授权为准，订阅不等于无限或通用 API 套餐。验证范围见 [验证说明](docs/verification.md)。
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ uv run --locked --no-dev --system-certs chatpass status
 uv run --locked --no-dev --system-certs chatpass serve
 ```
 
-`key init` 仅显示一次密钥；`login` 打开官方授权页面，180 秒内完成，可用 `login --no-browser` 自行打开授权链接；`status` 只显示非敏感状态。
+`key init` 生成密钥并在本机加密保存；管理台可随时查看或复制，默认隐藏。升级前仅保存哈希的旧密钥仍有效，但无法取回明文，遗失时需手动轮换；`login` 打开官方授权页面，180 秒内完成，可用 `login --no-browser` 自行打开授权链接；`status` 只显示非敏感状态。
 
 `serve` 只运行 API，`web` 同时运行管理台和 API。两者默认使用同一端口，**二选一运行**；已有 CLI 授权和密钥可继续用于管理台。
 
@@ -88,7 +88,7 @@ Model：模型目录或 GET /v1/models 返回的 data[].id
 
 若启动时改了端口，API 地址也要相应修改。网关密钥**不是 OpenAI 官方 API Key 或 OAuth token**，必须通过正在运行的 ChatPass 使用；不要把订阅凭据粘贴到客户端，也不要照搬未经查询的模型名。
 
-Hermes Agent、OpenClaw、DeepSeek Harness 的实际版本、provider API 类型和工具调用行为均需验证。当前已提交版本只支持原生流式 Responses，不能用于仅支持 Chat Completions 的客户端。支持矩阵和验收步骤见 [客户端说明](docs/clients.md)。
+当前源码支持原生 Responses 和 Chat Completions 的流式／非流式接口，优先使用原生流式 Responses。有限授权诊断及用户反馈已确认 DSH 新会话可用，但不是所有客户端或所有协议模式的验收；真实终帧输出为空的聚合缺口仍未解决。Hermes、OpenClaw 与 DSH 的实际版本、历史和工具轮须逐一验证，见 [客户端说明](docs/clients.md)。
 
 ## 与订阅中转平台的区别
 
@@ -100,20 +100,20 @@ Hermes Agent、OpenClaw、DeepSeek Harness 的实际版本、provider API 类型
 | 上游接口 | 公共 `https://api.openai.com/v1/models` 与 `/v1/responses` | 部分项目适配 Codex 私有后端；客户端侧的 `/v1` 地址不能说明上游是哪一种 |
 | 服务对象 | 一个人连接自己的本机工具 | 有的也是个人代理，有的面向多账号调度、用户 Key 分发和计费运营 |
 
-例如，[Sub2API](https://github.com/Wei-Shaw/sub2api) 面向订阅额度分发与管理，包含多账号、用户 Key、计费和调度；ChatPass 不面向这类运营场景。不能据此认定所有订阅代理都走私有接口，或对它们的安全性、合法性作统一判断。授权依据与技术细节见 [协议说明](docs/protocol-notes.md)。
+例如，[Sub2API](https://github.com/Wei-Shaw/sub2api) 面向订阅额度分发与管理，包含多账号、用户 Key、计费和调度；ChatPass 不面向这类运营场景。不能据此认定所有订阅代理都走私有接口，或对它们的安全性、合法性作统一判断。公共 SIWC 协议不是独占差异；本项目的取舍是个人本地、单账号与保守的凭据生命周期。授权依据与技术细节见 [协议说明](docs/protocol-notes.md)。
 
 ## 限制与安全
 
 ### 接口限制
 
-当前已提交版本提供 `GET /v1/models` 和流式 `POST /v1/responses`，不是完整 OpenAI API 兼容层。
+当前源码提供 `GET /v1/models`、`POST /v1/responses`、`POST /v1/chat/completions`，不是完整 OpenAI API 兼容层，也不代表已经发布或全部真实客户端验收。
 
-- 缺省 `stream:true`，上游固定 `store:false`；`stream:false` 明确报错。
-- 多轮须携带完整 `input` 历史；不支持 `previous_response_id`、后台任务、服务器状态引用和托管工具。
-- 保留函数/自定义工具调用及工具结果；`system` 历史项不受支持，使用 `instructions` / `developer` 语义。
-- `temperature`、`max_output_tokens` 等不支持字段返回明确的 400，不静默丢弃。
+- 两种推理接口可流式或非流式；上游始终 `stream:true`、`store:false`，只有 `response.completed` 算成功。
+- 多轮须携带完整历史；不支持 `previous_response_id`、后台任务、服务器状态引用和托管工具。
+- 原生 Responses 保留函数/自定义工具和 opaque reasoning 历史；Chat 的较窄子集不冒充无损兼容。`system` 转为 `developer`。
+- 默认兼容模式忽略列明的不支持调参字段，响应头 `X-ChatPass-Ignored-Fields` 标出名称；忽略输出上限不等于实现其约束。使用 `--compatibility-mode strict` 可明确拒绝。
 
-Chat Completions 桥接、非流式聚合和参数兼容模式正在开发，尚未纳入已提交版本；不能将其当作已发布能力或客户端兼容性保证。
+真实工具事件有输出而最终快照 `output` 为空的已知聚合缺口仍未修复，暂不据模拟通过承诺非流式／Chat 完整兼容。
 
 ### 凭据与访问安全
 
@@ -124,7 +124,16 @@ Chat Completions 桥接、非流式聚合和参数兼容模式正在开发，尚
 - 所有命令使用同一数据目录，Windows 默认 `%LOCALAPPDATA%\ChatPass`。指定目录示例：`uv run chatpass --data-dir D:\ChatPassData serve --port 19841`。
 - 本项目不隔离同一系统用户下的恶意软件。不要公开密钥、token、回调链接或完整对话。
 
-### 故障恢复
+### 登录、退出与恢复
+
+请求消耗与你的 ChatGPT 共享的计划预算；订阅不是无限 API 额度。管理台首次授权先提示确认，实际权限仍由官方页面授予；[官方用量](https://chatgpt.com/settings/usage) 可能反映计划或应用限制，本地请求计数不是令牌／账单额度。
+
+- 浏览器未打开：授权进行中可显式获取短期继续链接；仅管理会话可见，结束／过期即清除。链接不含身份令牌，但仍不可分享。
+- 已登录但计划未授权：仅加密保留已验证身份，不允许推理或刷新；由你决定是否重新请求权限。失败的新候选不替换旧有效授权。
+- 退出：管理台确认「退出账号」或 `uv run chatpass logout`。尝试官方撤销后清除本地凭据，保留网关密钥、注册与账号绑定。远端撤销未确认时到 ChatGPT 设置手动断开；已开始请求无法撤回。
+- 换账号：显式 `uv run chatpass logout --new-account`，或在退出确认中勾选下次使用不同账号；重置客户端／账号绑定，保留本机标识与网关密钥，再手动登录。
+- `refresh_not_yet_allowed`：等官方刷新窗口，刷新状态更新等待时间；待验证候选的验证不受旧令牌刷新窗口阻挡。
+
 
 - 授权超时或取消：重新执行 `login`。
 - 刷新结果不确定或刷新途中进程退出：停止调用并重新登录，避免重复使用轮换令牌。已保存但待验证的令牌仅重新验证，不重发旧刷新请求。
