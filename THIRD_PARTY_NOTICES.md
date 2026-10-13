@@ -12,4 +12,4 @@ ChatPass's local console adapts the layout conventions and stylesheet of [Tabler
 - Stylesheet SHA-256: `370a2d4e608ae518351d10528fc7dbe19b354ae5062c51b2a9cb294850d65403`
 - No Tabler JavaScript, demo data, remote fonts, analytics or other bundled third-party libraries are imported. The stylesheet contains embedded data images, not externally fetched assets.
 
-MIT applies to this third-party asset, not automatically to all ChatPass code. ChatPass's own license remains unselected; see [licensing](README.md#licensing-and-affiliation).
+MIT applies to this third-party asset, not automatically to all ChatPass code. ChatPass's own license remains unselected; see [licensing](README.en.md#licensing-and-affiliation).

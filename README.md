@@ -1,85 +1,139 @@
 # ChatPass
 
-**English** | [简体中文](README.zh-CN.md)
+**简体中文** | [English](README.en.md)
 
-**Connect your agent tools to your ChatGPT subscription.**
+**将自己的 ChatGPT 订阅接入 Agent 工具。**
 
-A local-first Responses gateway. Clients receive a ChatPass access key; upstream OAuth credentials stay on the gateway.
+本地优先的 Responses API 网关：客户端只持有 ChatPass 访问密钥，官方 OAuth 凭据保存在网关端。
 
-> **Status: initial implementation with mock testing, not verified against a real account or installed clients.** Account eligibility, quota accounting and Hermes/OpenClaw/DeepSeek Harness compatibility remain unverified. Remote deployment is not supported in this version.
+> **状态：初始实现，已进行模拟测试；尚未完成真实账号和客户端实测。** 不承诺所有订阅账号均有资格、无限额度，或 Hermes / OpenClaw / DeepSeek Harness 已可直接接入。服务器部署只是未来边界，本版拒绝非回环监听。
 
-## Implemented boundary
+## 已实现的范围
 
-- Public browser authorization with PKCE, state/nonce, dynamic client ID and signed OIDC identity validation.
-- AES-GCM state encryption with a platform-keyring master key; no plaintext fallback.
-- Single-account refresh with cross-process locking and durable rotation checkpoints, never automatic retries of one-time code/refresh POSTs.
-- Separate gateway keys, explicit creation/rotation, authenticated model discovery and streaming Responses.
-- Bounded bodies, concurrency, timeouts and streams; sanitized errors.
-- No imported tool credentials, account pooling, subscription resale, provider aggregation, Chat Completions adapter or separately billed fallback.
+- 官方公开授权协议：浏览器授权、PKCE、state/nonce、动态客户端标识、签名 ID token 校验。
+- 系统安全存储保存主密钥，AES-GCM 加密磁盘状态；没有明文凭据降级。
+- 单账号凭据刷新，跨进程文件锁，轮换令牌检查点；不自动重试单次授权码或刷新请求。
+- 独立的固定网关访问密钥，显式创建或轮换。
+- 受鉴权保护的 `GET /v1/models` 与流式 `POST /v1/responses`。
+- 请求体、并发、超时、流帧和总流大小限制；错误不输出上游凭据或任意错误正文。
+- 不导入其他工具的凭据，不切换按量计费 API，不做账号池、转售或多厂商聚合。
 
-Mock testing establishes implementation behavior, not upstream eligibility, official approval or client compatibility. See [verification](docs/verification.md).
+上述实现通过本地模拟协议验证，**不等于官方批准、账号可用或客户端兼容**。验证边界见 [验证说明](docs/verification.md)。
 
-## Local Web console
+## 本地 Web 管理台
 
-The Chinese-first local console adapts [Tabler](https://github.com/tabler/tabler), MIT, pinned to 1.6.1. Assets ship inside the Python package, without a CDN, remote fonts or telemetry. See [third-party notices](THIRD_PARTY_NOTICES.md).
+管理台基于 [Tabler](https://github.com/tabler/tabler)（MIT，固定版本 1.6.1）改造，静态资源随 Python 包提供，不使用 CDN、远程字体或遥测。模板来源与许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-```powershell
-uv sync --locked
-uv run chatpass web
-```
+### 推荐：Windows 双击启动
 
-This starts the console and inference gateway together and opens a browser after the server is ready. Create a gateway key in the UI, explicitly start official browser authorization, discover available models and read client setup guidance. Existing CLI credentials and keys remain usable. Overview counters are process-local requests and uptime, **not official remaining quota**.
+先安装 [uv](https://docs.astral.sh/uv/)，然后在仓库目录中双击 [start.cmd](start.cmd)。需要 Python 3.11+；若本机没有合适的 Python，uv 可按需下载。首次启动可能下载 Python 和锁定的运行依赖，因此需要联网；账号授权和上游调用也需要网络。
 
-The terminal management URL contains a private, single-use fragment capability valid for five minutes. Do not share it. The browser removes the fragment before any management request, then exchanges the capability for an independent HttpOnly management session; inference keys never confer management authority. Sessions expire after eight hours or a process restart. Restart `web` for a fresh entry link. Use `web --no-browser` to open the printed URL manually.
+脚本会自动定位项目目录，调用已有 CLI，在服务就绪后打开浏览器。**不需要管理员权限，不注册后台服务，也不会自动授权账号。** 使用时保持终端运行，按 `Ctrl+C` 停止；缺少 uv 或启动失败时保留错误窗口。
 
-Run **either** `web` or `serve`, not both on the same port. `web` supports first-time setup before a key exists; `serve` stays API-only. This is not a remotely accessible control panel. See [console security and verification](docs/web-console.md).
+### 通用方式：命令行启动
 
-## CLI-only quick start
-
-Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and a supported secure platform keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service/KWallet).
+在项目目录运行，适用于 Windows、macOS 和具备安全 keyring 的 Linux：
 
 ```powershell
-uv sync --locked
-uv run chatpass key init
-uv run chatpass login
-uv run chatpass status
-uv run chatpass serve
+uv run --locked --no-dev --system-certs chatpass web
 ```
 
-Save the gateway key printed once by `key init` in your own clients. `login` opens your browser for user-controlled official consent with a 180-second timeout. `login --no-browser` prints the authorization link. `status` never displays OAuth tokens. Keep the serving terminal running.
+不必每次先执行 `uv sync`。uv 会按锁文件准备运行环境，不安装测试、浏览器测试等开发依赖；`--system-certs` 使用系统信任链，**不会关闭 TLS 校验**。需要系统安全凭据存储：Windows 使用 Credential Manager；无头 Linux 若没有可用的 Secret Service/KWallet 将拒绝保存凭据。
+
+需要换端口或自行打开管理入口时：
+
+```powershell
+.\start.cmd --port 19841 --no-browser
+```
+
+等价命令为 `uv run --locked --no-dev --system-certs chatpass web --port 19841 --no-browser`。启动脚本只转发 `web` 的参数；`--data-dir` 等全局参数、其他子命令或开发操作直接使用 CLI。**标准入口仍然是 `chatpass web`，双击脚本只是便利封装。**
+
+### 启动后做什么
+
+管理台可以在尚未创建密钥、尚未授权账号时启动：
+
+1. 在「网关密钥」中创建密钥，复制到自己的客户端；显示内容不会保存在浏览器本地存储，离开密钥页面或点击清除即隐藏。
+2. 在「账号授权」中点击登录，由你在官方页面确认；管理台只显示进度和结果，不显示 OAuth 凭据。
+3. 在「模型目录」中主动查询实际可用模型，在「客户端接入」中查看 Responses 接入信息。
+4. 概览显示授权/密钥状态、当前进程请求计数与运行时间；**不是官方剩余额度**，重启后计数重置。
+
+管理入口是终端输出的带片段链接，**单次使用、五分钟内有效**；不要分享或截图该链接。浏览器先清除链接中的令牌，再向同源接口交换独立管理会话；管理 Cookie 为 HttpOnly，推理密钥不能获得管理权限。管理会话八小时过期或重启即失效；需要重新启动 `web` 获取新的入口。`--no-browser` 只输出入口，不自动打开浏览器。
+
+`web` 与 `serve` 默认使用同一端口，**二选一运行**，不要同时启动。它们使用同一加密状态目录，已有 CLI 授权和密钥可直接继续使用。本地管理接口仍不支持远程浏览器或公网暴露。安全与验证范围见 [Web 管理台说明](docs/web-console.md)。
+
+## 纯命令行启动
+
+需要 Python 3.11+、[uv](https://docs.astral.sh/uv/) 和受支持的系统安全凭据存储。Windows 使用 Credential Manager；无头 Linux 若没有可用的 Secret Service/KWallet 将拒绝保存凭据。
+
+在项目目录运行：
+
+```powershell
+uv sync --locked --no-dev --system-certs
+uv run --locked --no-dev --system-certs chatpass key init
+uv run --locked --no-dev --system-certs chatpass login
+uv run --locked --no-dev --system-certs chatpass status
+uv run --locked --no-dev --system-certs chatpass serve
+```
+
+1. `key init` 只显示一次网关密钥。复制到自己的客户端，不提交到 Issue、截图或版本库。
+2. `login` 打开浏览器，由你确认官方授权；180 秒内完成。可用 `login --no-browser` 显示授权链接自行打开。
+3. `status` 只输出非敏感状态。
+4. `serve` 默认监听 `127.0.0.1:19840`。终端需保持运行。
+
+更换访问密钥：`uv run chatpass key rotate`。旧密钥立即失效，所有客户端须更新；这不会轮换官方账号凭据。
+
+可指定非敏感存储位置和端口：
+
+```powershell
+uv run chatpass --data-dir D:\ChatPassData serve --port 19841
+```
+
+所有命令须使用相同数据目录。默认 Windows 目录为 `%LOCALAPPDATA%\ChatPass`。不要手动删除系统安全存储主密钥；丢失后已有加密状态无法解密。
+
+## 客户端填写什么
 
 ```text
-Base URL: http://127.0.0.1:19840/v1
-API Key: the cp_ key printed by key init / key rotate
-Model: an id returned by GET /v1/models
-API: native streaming Responses
+API 地址：http://127.0.0.1:19840/v1
+API Key：key init / key rotate 显示的 cp_ 开头密钥
+Model：GET /v1/models 返回的 data[].id
+接口：Responses API（不是 Chat Completions）
 ```
 
-This is **not an OpenAI API key**; it works only through the running gateway. Never paste upstream tokens into clients.
+此密钥**不是 OpenAI 官方 API Key**，也不是 ChatGPT OAuth token；必须通过正在运行的 ChatPass 使用。
 
-`uv run chatpass key rotate` immediately invalidates the old client key. A non-secret data location and port can be selected with `uv run chatpass --data-dir D:\ChatPassData serve --port 19841`; use the same data directory for all commands. On Windows the default is `%LOCALAPPDATA%\ChatPass`.
+先查询实际模型，再配置客户端。不要照搬某个模型名或把订阅凭据粘贴到客户端。具体接入条件和测试清单见 [客户端说明](docs/clients.md)。
 
-## Protocol limitations
+| 客户端 | 真实接入状态 |
+| --- | --- |
+| Hermes Agent | 未实测；需确认其版本可使用原生流式 Responses |
+| OpenClaw | 未实测；需确认 provider 的 API 类型和完整历史行为 |
+| DeepSeek Harness | 未实测；需确认 Responses 路由和请求字段 |
 
-The verified HTTP preview requires `stream:true` and `store:false`, full input history rather than `previous_response_id`, and explicit rejection of unsupported fields/hosted tools. String input becomes a user item; function/custom tools and their explicit results are preserved. `system` history items are unsupported; use supported `instructions`/`developer` semantics. Nonstream requests, `temperature`, `max_output_tokens` and other unsupported preview fields return a clear 400 instead of silently changing meaning.
+## 当前协议限制
 
-The gateway exposes only `GET /v1/models` and `POST /v1/responses` for inference. The model catalog is normalized from upstream `models/slug/visibility` to `data/id`. Optional local management endpoints run only in `web` mode and require a separate protected management session; they are not public authorization APIs.
+本版遵循已核实的官方 HTTP 预览协议，而不是宣称完整 OpenAI API 兼容：
 
-See [protocol evidence and licensing](docs/protocol-notes.md) and [client setup/verification](docs/clients.md). All three target clients remain **not tested** against a real account; clients that only support Chat Completions cannot use this initial release.
+- 仅支持流式请求，缺省设置 `stream:true`；`stream:false` 明确报错。
+- 固定发送 `store:false`，没有服务器会话保存。
+- 多轮对话须带完整 `input` 历史；`previous_response_id` 不受支持。
+- 保留函数/自定义工具调用及工具结果；不支持托管工具或 Chat Completions 转换。
+- `system` 历史项不受支持；采用上游支持的 `instructions`/`developer` 用法。
+- `temperature`、`max_output_tokens` 等预览不支持字段返回明确的 400，不静默丢弃。
+- 上游资格/额度/授权错误仍会导致调用失败；订阅不等于无限或通用 API 套餐。
 
-## Recovery and security
+依据和许可边界见 [协议说明](docs/protocol-notes.md)。
 
-- Secure-keyring failures stop persistence; fix the system backend rather than using plaintext.
-- Login timeout/cancellation: run `login` again. Do not post callback URLs or credentials.
-- Ambiguous rotating-refresh results or a crash during refresh: re-login; the predecessor is never replayed.
-- Received replacement tokens survive temporary identity-verification failures in encrypted quarantine; they are not usable before validation.
-- Upstream 401/403/429: investigate authorization, eligibility or limits. Inference is not automatically replayed or sent to a billed API.
-- Literal loopback-only binding is enforced. **Do not expose it using a reverse proxy or tunnel.** Public deployment needs separate TLS, rate limiting, admin isolation and multi-user hardening.
-- This does not isolate secrets from malware running as the same OS user. Treat gateway keys as passwords.
+## 故障恢复与安全边界
 
-A ChatGPT subscription is not a universal or unlimited API plan. Models, eligibility, supported flows and limits depend on upstream service behavior.
+- 无可用系统 keyring：先修复系统安全存储，**不会回退到明文文件**。
+- 授权超时/取消：重新运行 `login`，不要公开回调 URL 或 token。
+- 刷新请求网络结果不确定或进程在请求中退出：为避免重复使用轮换令牌，停止调用并重新 `login`。
+- 已收到新令牌但临时无法验证签名：加密保留待验证状态，下次调用仅重新验证，不重发旧刷新令牌。
+- 上游 401/403/429：检查授权、账号资格及额度；不自动切到付费 API，也不自动重放可能计费的推理。
+- 本版只接受回环监听；**不要用反向代理、隧道或端口转发公开它**。尚无公网 TLS、配额隔离或多用户加固；本地管理会话不能替代这些能力。
+- 同一系统用户下的恶意软件不在凭据隔离边界内；网关密钥仍应按密码保管。
 
-## Development
+## 开发与测试
 
 ```powershell
 uv sync --locked --group dev
@@ -88,12 +142,12 @@ uv run ruff check src tests
 uv build
 ```
 
-Configure a correct system certificate chain if your package-index proxy requires one; uv's `--system-certs` option may be appropriate on managed machines. Do not disable certificate verification.
+若本机代理证书导致安装 TLS 验证失败，可配置正确的系统证书，或在明确了解本机信任链后使用 uv 的 `--system-certs` 选项；不要关闭证书校验。
 
-[Design](docs/design.md) · [Implementation plan](docs/implementation-plan.md) · [Work checkpoint](docs/work-status.md)
+设计与执行记录：[设计](docs/design.md)、[实施计划](docs/implementation-plan.md)、[进度](docs/work-status.md)。
 
-## Licensing and affiliation
+## 许可与免责声明
 
-ChatPass is not affiliated with or endorsed by OpenAI. Use must comply with service terms and dependency licenses.
+本项目与 OpenAI 无隶属关系，亦非其官方产品。使用须遵守适用服务条款及依赖许可证。
 
-**A project license has not yet been selected.** Public visibility alone grants no open-source license. The official DevKit uses a custom noncommercial license; its code has not been copied into this independent implementation. Protocol interoperability is not permission for commercial use or remote hosting.
+**项目许可证尚未选择。** 公开仓库不自动授予开源许可。官方 DevKit 的自定义非商业许可证不适合直接当作宽松开源依赖；本实现没有复制其代码。协议互操作也不等于获得商用或远程托管授权。
