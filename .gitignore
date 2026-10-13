@@ -13,6 +13,8 @@ secrets/
 data/
 logs/
 *.log
+state.enc
+state.lock
 
 # Common build and dependency outputs
 node_modules/
@@ -23,6 +25,8 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
 
 # Editor and OS files
 .idea/

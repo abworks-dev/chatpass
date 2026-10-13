@@ -1,79 +1,84 @@
 # ChatPass
 
+**English** | [简体中文](README.zh-CN.md)
+
 **Connect your agent tools to your ChatGPT subscription.**
 
-A local-first, self-hostable gateway for ChatGPT subscription access via the Responses API.
+A local-first Responses gateway. Clients receive a ChatPass access key; upstream OAuth credentials stay on the gateway.
 
-> **Status: design stage.** This repository contains the product scope and proposed architecture, not a working gateway. Authentication eligibility, quota behavior and client compatibility require real integration tests.
+> **Status: initial implementation with mock testing, not verified against a real account or installed clients.** Account eligibility, quota accounting and Hermes/OpenClaw/DeepSeek Harness compatibility remain unverified. Remote deployment is not supported in this version.
 
-## Scope
+## Implemented boundary
 
-ChatPass is intended for individuals connecting their own agent tools to an authorized ChatGPT account. It is not a general-purpose multi-provider relay, an account pool or a subscription resale service.
+- Public browser authorization with PKCE, state/nonce, dynamic client ID and signed OIDC identity validation.
+- AES-GCM state encryption with a platform-keyring master key; no plaintext fallback.
+- Single-account refresh with cross-process locking and durable rotation checkpoints, never automatic retries of one-time code/refresh POSTs.
+- Separate gateway keys, explicit creation/rotation, authenticated model discovery and streaming Responses.
+- Bounded bodies, concurrency, timeouts and streams; sanitized errors.
+- No imported tool credentials, account pooling, subscription resale, provider aggregation, Chat Completions adapter or separately billed fallback.
 
-The intended client configuration consists of:
+Mock testing establishes implementation behavior, not upstream eligibility, official approval or client compatibility. See [verification](docs/verification.md).
 
-```text
-Base URL: http://127.0.0.1:<port>/v1
-API Key: <gateway-issued-access-key>
-Model: <model-available-to-your-authorized-account>
+## Local quick start
+
+Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and a supported secure platform keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service/KWallet).
+
+```powershell
+uv sync --locked
+uv run chatpass key init
+uv run chatpass login
+uv run chatpass status
+uv run chatpass serve
 ```
 
-The gateway-issued key is **not** an OpenAI API key. It authenticates the client to a running ChatPass instance. Upstream OAuth credentials remain on the gateway and are not distributed to clients.
+Save the gateway key printed once by `key init` in your own clients. `login` opens your browser for user-controlled official consent with a 180-second timeout. `login --no-browser` prints the authorization link. `status` never displays OAuth tokens. Keep the serving terminal running.
 
-## Planned capabilities
+```text
+Base URL: http://127.0.0.1:19840/v1
+API Key: the cp_ key printed by key init / key rotate
+Model: an id returned by GET /v1/models
+API: native streaming Responses
+```
 
-- Supported account authorization and automatic credential refresh.
-- Responses API access, streaming output and structured tool calls.
-- Model discovery based on verified upstream availability.
-- Explicit errors for authorization, eligibility, quota and unsupported features.
-- No automatic fallback to a separately billed API.
+This is **not an OpenAI API key**; it works only through the running gateway. Never paste upstream tokens into clients.
 
-These are design targets, not shipped features. Chat Completions translation will be considered only if a target client's tested version requires it; complete OpenAI API compatibility is not promised.
+`uv run chatpass key rotate` immediately invalidates the old client key. A non-secret data location and port can be selected with `uv run chatpass --data-dir D:\ChatPassData serve --port 19841`; use the same data directory for all commands. On Windows the default is `%LOCALAPPDATA%\ChatPass`.
 
-## Compatibility targets
+## Protocol limitations
 
-| Client | Status | Acceptance target |
-| --- | --- | --- |
-| Hermes Agent | Not tested | Streaming, tool call/result round trip and multi-turn conversation |
-| OpenClaw | Not tested | Streaming, tool call/result round trip and multi-turn conversation |
-| DeepSeek Harness | Not tested | Streaming, tool call/result round trip and multi-turn conversation |
+The verified HTTP preview requires `stream:true` and `store:false`, full input history rather than `previous_response_id`, and explicit rejection of unsupported fields/hosted tools. String input becomes a user item; function/custom tools and their explicit results are preserved. `system` history items are unsupported; use supported `instructions`/`developer` semantics. Nonstream requests, `temperature`, `max_output_tokens` and other unsupported preview fields return a clear 400 instead of silently changing meaning.
 
-The first deployment target is a Windows computer running all three clients. Actual compatibility claims must identify tested client versions.
+The gateway exposes only `GET /v1/models` and `POST /v1/responses` for inference. The model catalog is normalized from upstream `models/slug/visibility` to `data/id`. There is no public authorization management API.
 
-## Deployment
+See [protocol evidence and licensing](docs/protocol-notes.md) and [client setup/verification](docs/clients.md). All three target clients remain **not tested** against a real account; clients that only support Chat Completions cannot use this initial release.
 
-**Local first:** bind to `127.0.0.1` by default. No cloud server is required for the initial use case.
+## Recovery and security
 
-**Self-hostable by design:** keep the gateway core independent of Windows, make listener and data locations configurable, and separate browser authorization from gateway execution. Future remote deployments use the same client API contract.
+- Secure-keyring failures stop persistence; fix the system backend rather than using plaintext.
+- Login timeout/cancellation: run `login` again. Do not post callback URLs or credentials.
+- Ambiguous rotating-refresh results or a crash during refresh: re-login; the predecessor is never replayed.
+- Received replacement tokens survive temporary identity-verification failures in encrypted quarantine; they are not usable before validation.
+- Upstream 401/403/429: investigate authorization, eligibility or limits. Inference is not automatically replayed or sent to a billed API.
+- Literal loopback-only binding is enforced. **Do not expose it using a reverse proxy or tunnel.** Public deployment needs separate TLS, rate limiting, admin isolation and multi-user hardening.
+- This does not isolate secrets from malware running as the same OS user. Treat gateway keys as passwords.
 
-Remote access is not implemented. Public-network deployment requires TLS, authenticated inference routes, rate limits and protected management endpoints. Prefer a private network or VPN where possible. Allowing remote connections does not authorize account sharing or resale.
+A ChatGPT subscription is not a universal or unlimited API plan. Models, eligibility, supported flows and limits depend on upstream service behavior.
 
-See [the design boundary](docs/design.md) for the proposed architecture and acceptance criteria.
+## Development
 
-## Security
+```powershell
+uv sync --locked --group dev
+uv run pytest -q
+uv run ruff check src tests
+uv build
+```
 
-- Keep gateway access keys separate from upstream OAuth credentials.
-- Do not log keys, OAuth tokens or full request bodies by default.
-- Use secure platform credential storage; do not silently fall back to plaintext.
-- Default to loopback-only access and require deliberate remote configuration.
-- Treat credential refresh and persistence as concurrency-sensitive operations.
+Configure a correct system certificate chain if your package-index proxy requires one; uv's `--system-certs` option may be appropriate on managed machines. Do not disable certificate verification.
 
-Do not submit account credentials or request contents in public issues. Security-reporting instructions will be published before a usable release.
-
-## Limitations
-
-A ChatGPT subscription is not a universal or unlimited API plan. Available models, eligible accounts, supported authorization flows and usage limits depend on the upstream service. They must be verified before being advertised.
-
-## Roadmap
-
-1. Validate the authorized upstream flow and dependency licensing.
-2. Implement and test the Windows local gateway.
-3. Verify the three target clients with streaming, tools and multi-turn requests.
-4. Document installation, configuration and troubleshooting from tested behavior.
-5. Add hardened server deployment without changing the client-facing contract.
+[Design](docs/design.md) · [Implementation plan](docs/implementation-plan.md) · [Work checkpoint](docs/work-status.md)
 
 ## Licensing and affiliation
 
-ChatPass is not affiliated with or endorsed by OpenAI. Use must comply with applicable service terms and dependency licenses.
+ChatPass is not affiliated with or endorsed by OpenAI. Use must comply with service terms and dependency licenses.
 
-**A project license has not yet been selected.** Public repository visibility alone does not grant an open-source license. Do not assume upstream noncommercial code can be incorporated into a permissively licensed release; licensing must be resolved before implementation reuse or distribution.
+**A project license has not yet been selected.** Public visibility alone grants no open-source license. The official DevKit uses a custom noncommercial license; its code has not been copied into this independent implementation. Protocol interoperability is not permission for commercial use or remote hosting.
