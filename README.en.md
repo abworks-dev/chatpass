@@ -1,120 +1,139 @@
 <p align="center">
-  <img src="src/chatpass/static/brand/chatpass-icon.svg" width="96" height="96" alt="ChatPass conversation ticket icon">
+  <img src="src/chatpass/static/brand/chatpass-icon.svg" width="96" height="96" alt="ChatPass conversation pass icon">
 </p>
 
 # ChatPass
 
 [简体中文](README.md) | **English**
 
-**A local gateway for individual agent users, built on ChatGPT's public authorization protocol.**
+**Connect your agent tools to your ChatGPT subscription.**
 
-Use Sign in with ChatGPT to explicitly grant ChatGPT plan usage permission, then connect your own agent tools within that authorization. Clients receive a ChatPass access key; upstream OAuth credentials stay on the local gateway. ChatPass does not copy subscription credentials from other tools, pool accounts or resell quota.
+ChatPass is a local gateway for personal use. It uses the public Sign in with ChatGPT authorization flow to connect your own agent tools to subscription capabilities within the permissions granted. Clients need only a local API address and a separate gateway key, not your ChatGPT OAuth credentials.
 
-> **Status: initial implementation with mock testing, not verified against a real account or installed clients.** Account eligibility, quota accounting and Hermes/OpenClaw/DeepSeek Harness compatibility remain unverified. Remote deployment is not supported in this version.
+> **Status: initial implementation with mock testing; real accounts and Hermes / OpenClaw / DeepSeek Harness have not been tested.** Account eligibility, available models and quota depend on upstream authorization. A subscription is not unlimited usage or a general-purpose API entitlement. See [verification scope](docs/verification.md).
 
-## Positioning and differences from subscription proxies
+## Quick start
 
-ChatPass is for **one person connecting their own agent tools on the same machine**, not a subscription relay business or multi-user API platform. It is still a gateway/proxy in network terms. The distinction is not whether it uses OAuth or forwards requests, but **what permission is granted, which upstream interface it calls, and whom it serves**.
+### 1. Get the project and prepare your environment
 
-| Dimension | ChatPass's choice | Approaches other subscription proxies may use |
-| --- | --- | --- |
-| Authorization | Sign in with ChatGPT under the ChatPass app name, dynamic client registration and explicit `chatgpt.tokens.use.direct` plan usage permission | OAuth flows for tools such as Codex, or imported tool credentials; OAuth alone does not imply the same permission |
-| Upstream | Public `https://api.openai.com/v1/models` and `/v1/responses` | Some projects adapt private backends such as `chatgpt.com/backend-api/codex/*`; a client-facing `/v1` URL does not identify the upstream |
-| Audience | One individual, one account, local access from their own clients | Some are also personal proxies; others target account scheduling, multi-user key distribution, shared quota or billing |
-| Credentials | Independently obtained and protected credentials; clients receive only a separate gateway key | Implementations vary; OAuth, separate keys and encrypted storage are not unique to ChatPass |
-| Explicit non-goals | Account pools, subscription resale, provider aggregation, automatic separately billed API fallback and public hosting | Some platforms focus on these capabilities; their features and deployment instructions do not apply to ChatPass |
+Download and extract a ZIP from the [GitHub repository](https://github.com/abworks-dev/chatpass), or clone it:
 
-For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) describes itself as a subscription quota distribution and management platform, with multiple accounts, user API keys, billing and scheduling. **ChatPass does not target that operating model.** [codex-sub-proxy](https://github.com/tech-grandpa/codex-sub-proxy) is closer to a personal subscription proxy but explicitly uses the private Codex backend. These illustrate different approaches, not a claim that all subscription proxies use private interfaces or a blanket judgment about their security or legality.
+```powershell
+git clone https://github.com/abworks-dev/chatpass.git
+cd chatpass
+```
 
-**A public protocol is not official endorsement or a general-purpose API entitlement.** [OpenAI's public documentation](https://developers.openai.com/siwc/token-sharing-open-source) describes ChatGPT plan usage permission for open-source, locally hosted apps. ChatPass independently implements that path; it is not an official OpenAI product or an approved partner integration. Successful OAuth sign-in alone is insufficient: actual plan usage permission, account eligibility, quota and applicable terms still govern requests. Paid or remotely hosted apps require separate verification of OpenAI's access requirements; the MIT software license does not grant rights to upstream services.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and confirm that `uv --version` works in your terminal.
 
-The official [Sign in with ChatGPT DevKit](https://github.com/openai/sign-in-with-chatgpt-devkit) helps developers embed authorization and inference into their apps. ChatPass instead aims to give existing tools a configurable local endpoint and a separate access key. This is a product-format distinction, not a claim to have invented OAuth, encryption or streaming proxies. See [protocol and license evidence](docs/protocol-notes.md). Real-account and client compatibility remain unverified.
+- Python 3.11+ is required; uv can download a suitable version if necessary.
+- A secure OS credential store is required: Windows Credential Manager, macOS Keychain, or Linux Secret Service/KWallet. Without one, credential persistence fails closed rather than falling back to plaintext files.
+- First startup may download Python and runtime dependencies. Authorization and model requests also require internet access.
 
-## Implemented boundary
+### 2. Start the local management console
 
-- Public browser authorization with PKCE, state/nonce, dynamic client ID and signed OIDC identity validation.
-- AES-GCM state encryption with a platform-keyring master key; no plaintext fallback.
-- Single-account refresh with cross-process locking and durable rotation checkpoints, never automatic retries of one-time code/refresh POSTs.
-- Separate gateway keys, explicit creation/rotation, authenticated model discovery and streaming Responses.
-- Bounded bodies, concurrency, timeouts and streams; sanitized errors.
-- No imported tool credentials, account pooling, subscription resale, provider aggregation, Chat Completions adapter or separately billed fallback.
+**Recommended on Windows:** double-click [start.cmd](start.cmd) in the project directory. It needs no administrator privileges, registers no background service and does not automatically authorize an account.
 
-Mock testing establishes implementation behavior, not upstream eligibility, official approval or client compatibility. See [verification](docs/verification.md).
-
-## Local Web console
-
-The Chinese-first local console adapts [Tabler](https://github.com/tabler/tabler), MIT, pinned to 1.6.1. Assets ship inside the Python package, without a CDN, remote fonts or telemetry. See [third-party notices](THIRD_PARTY_NOTICES.md).
-
-Requires [uv](https://docs.astral.sh/uv/), Python 3.11+ (uv can obtain a suitable interpreter when needed), and a supported secure platform keyring. The first launch may download Python and locked runtime dependencies, so network access is needed; a prepared environment still needs network access for official authorization and upstream calls.
-
-**Windows:** double-click [start.cmd](start.cmd) in the repository. The launcher switches to its own directory and runs the same CLI, without administrator privileges, a background service or automatic account authorization. Keep its terminal open while using the gateway; stop with `Ctrl+C`. If uv is missing or startup fails, the window stays open with an error.
-
-Alternatively, run from the repository directory on Windows, macOS or Linux:
+On other platforms, or if you prefer a terminal, run from the project directory:
 
 ```powershell
 uv run --locked --no-dev --system-certs chatpass web
 ```
 
-This starts the console and inference gateway together and opens a browser after the server is ready. The launcher excludes development dependencies and uses the system trust store without disabling TLS validation. To choose another port or open the printed management link manually:
+The browser opens when the service is ready. Keep the terminal running; press `Ctrl+C` to stop. uv prepares the runtime from the lockfile, so an initial `uv sync` is unnecessary. `--system-certs` uses the system trust store without disabling TLS verification.
+
+To change the port or open the management link printed in the terminal manually:
 
 ```powershell
-.\start.cmd --port 19841 --no-browser
+uv run --locked --no-dev --system-certs chatpass web --port 19841 --no-browser
 ```
 
-The equivalent CLI is `uv run --locked --no-dev --system-certs chatpass web --port 19841 --no-browser`. The Windows launcher forwards Web options only; use the CLI for global options such as `--data-dir`, other subcommands or development work. `chatpass web` remains the canonical entry point; the script is only a convenience wrapper.
+The Windows launcher also accepts `--port 19841 --no-browser`, but forwards only `web` arguments. Use the CLI directly for other subcommands and global options.
 
-Create a gateway key in the UI, explicitly start official browser authorization, discover available models and read client setup guidance. Existing CLI credentials and keys remain usable. Overview counters are process-local requests and uptime, **not official remaining quota**.
+### 3. Authorize and get connection details
 
-The terminal management URL contains a private, single-use fragment capability valid for five minutes. Do not share it. The browser removes the fragment before any management request, then exchanges the capability for an independent HttpOnly management session; inference keys never confer management authority. Sessions expire after eight hours or a process restart. Restart `web` for a fresh entry link. Use `web --no-browser` to open the printed URL manually.
+1. Create a key under **Gateway key**, then copy it and store it securely.
+2. Click sign in under **Account authorization** and confirm authorization on the official page.
+3. Query **Model catalog** for actually available models, then configure your agent tools.
 
-Run **either** `web` or `serve`, not both on the same port. `web` supports first-time setup before a key exists; `serve` stays API-only. This is not a remotely accessible control panel. See [console security and verification](docs/web-console.md).
+The console can start before authorization or key creation. Its overview request counters reset on restart and **are not official remaining quota**.
 
-## CLI-only quick start
+<details>
+<summary>Optional: use the CLI without the management console</summary>
 
-Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and a supported secure platform keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service/KWallet).
+Run these commands from the project directory:
 
 ```powershell
-uv sync --locked --no-dev --system-certs
 uv run --locked --no-dev --system-certs chatpass key init
 uv run --locked --no-dev --system-certs chatpass login
 uv run --locked --no-dev --system-certs chatpass status
 uv run --locked --no-dev --system-certs chatpass serve
 ```
 
-Save the gateway key printed once by `key init` in your own clients. `login` opens your browser for user-controlled official consent with a 180-second timeout. `login --no-browser` prints the authorization link. `status` never displays OAuth tokens. Keep the serving terminal running.
+`key init` displays the key once. `login` opens the official authorization page; finish within 180 seconds, or use `login --no-browser` to open the authorization link yourself. `status` displays only non-sensitive state.
+
+`serve` runs only the API; `web` runs both the console and API. They share the default port, so **run one or the other**. Existing CLI authorization and keys also work with the console.
+
+</details>
+
+## Client configuration
+
+In an agent tool supporting a custom API address, set:
 
 ```text
 Base URL: http://127.0.0.1:19840/v1
-API Key: the cp_ key printed by key init / key rotate
-Model: an id returned by GET /v1/models
+API Key: the cp_ key created in the console or by key init
+Model: a data[].id from the model catalog or GET /v1/models
 API: native streaming Responses
 ```
 
-This is **not an OpenAI API key**; it works only through the running gateway. Never paste upstream tokens into clients.
+If you changed the startup port, update the API address too. The gateway key **is not an OpenAI API key or OAuth token**: it works only through the running ChatPass gateway. Do not paste subscription credentials into clients or assume a model name without querying the catalog.
 
-`uv run chatpass key rotate` immediately invalidates the old client key. A non-secret data location and port can be selected with `uv run chatpass --data-dir D:\ChatPassData serve --port 19841`; use the same data directory for all commands. On Windows the default is `%LOCALAPPDATA%\ChatPass`.
+The actual versions, provider API types and tool-call behavior of Hermes Agent, OpenClaw and DeepSeek Harness still need verification. The currently committed version supports only native streaming Responses, not Chat Completions-only clients. See the [client support matrix and acceptance steps](docs/clients.md).
 
-## Protocol limitations
+## How it differs from subscription relay platforms
 
-The verified HTTP preview requires `stream:true` and `store:false`, full input history rather than `previous_response_id`, and explicit rejection of unsupported fields/hosted tools. String input becomes a user item; function/custom tools and their explicit results are preserved. `system` history items are unsupported; use supported `instructions`/`developer` semantics. Nonstream requests, `temperature`, `max_output_tokens` and other unsupported preview fields return a clear 400 instead of silently changing meaning.
+**Personal use, one account, on your own machine; no account pools, quota resale, multi-user relay or provider aggregation.** ChatPass is still a gateway/proxy. The distinction is not whether it uses OAuth, but its authorization path, upstream interface and audience.
 
-The gateway exposes only `GET /v1/models` and `POST /v1/responses` for inference. The model catalog is normalized from upstream `models/slug/visibility` to `data/id`. Optional local management endpoints run only in `web` mode and require a separate protected management session; they are not public authorization APIs.
+| Dimension | ChatPass | Approaches other subscription proxies may use |
+| --- | --- | --- |
+| Authorization | Sign in with ChatGPT under its own app name, requesting `chatgpt.tokens.use.direct` plan usage permission; no imported tool credentials | OAuth flows for tools such as Codex, or imported tool credentials |
+| Upstream | Public `https://api.openai.com/v1/models` and `/v1/responses` | Some adapt the private Codex backend; a client-facing `/v1` address does not identify the upstream |
+| Audience | One person connecting their own local tools | Some are also personal proxies; others target multiple accounts, user key distribution and billing operations |
 
-See [protocol evidence and licensing](docs/protocol-notes.md) and [client setup/verification](docs/clients.md). All three target clients remain **not tested** against a real account; clients that only support Chat Completions cannot use this initial release.
+For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) targets subscription quota distribution and management, including multiple accounts, user keys, billing and scheduling. ChatPass does not target that operating model. This does not imply that all subscription proxies use private interfaces, or constitute a blanket judgment about their security or legality. See [protocol notes](docs/protocol-notes.md) for authorization evidence and technical details.
 
-## Recovery and security
+## Limitations and security
 
-- Secure-keyring failures stop persistence; fix the system backend rather than using plaintext.
-- Login timeout/cancellation: run `login` again. Do not post callback URLs or credentials.
-- Ambiguous rotating-refresh results or a crash during refresh: re-login; the predecessor is never replayed.
-- Received replacement tokens survive temporary identity-verification failures in encrypted quarantine; they are not usable before validation.
-- Upstream 401/403/429: investigate authorization, eligibility or limits. Inference is not automatically replayed or sent to a billed API.
-- Literal loopback-only binding is enforced. **Do not expose it using a reverse proxy or tunnel.** Public deployment needs separate TLS, rate limiting, admin isolation and multi-user hardening.
-- This does not isolate secrets from malware running as the same OS user. Treat gateway keys as passwords.
+### API limitations
 
-A ChatGPT subscription is not a universal or unlimited API plan. Models, eligibility, supported flows and limits depend on upstream service behavior.
+The currently committed version provides `GET /v1/models` and streaming `POST /v1/responses`. This is not a complete OpenAI API compatibility layer.
 
-## Development
+- Requests default to `stream:true` with upstream `store:false`; `stream:false` is explicitly rejected.
+- Send full `input` history on each turn. `previous_response_id`, background work, server-state references and hosted tools are unsupported.
+- Function/custom tool calls and explicit results are preserved. `system` history items are unsupported; use `instructions` / `developer` semantics.
+- Unsupported fields such as `temperature` and `max_output_tokens` return a clear 400 rather than being silently dropped.
+
+A Chat Completions bridge, nonstreaming aggregation and parameter compatibility mode are under development and not yet included in the committed version. They are not released capabilities or guarantees of client compatibility.
+
+### Credential and access security
+
+- OAuth credentials are encrypted locally; the OS secure credential store protects the master key. Do not manually delete the master key: existing encrypted state would become unreadable.
+- **Loopback access only. Do not expose the service through reverse proxies, tunnels or port forwarding.** This version lacks the TLS, multi-user isolation and quota management needed for public deployment.
+- Management entry links are single-use and expire after five minutes; do not share or screenshot them. Management sessions expire after eight hours or a restart. Restart `web` to get a new entry link. Gateway keys cannot sign in to the console. See [console documentation](docs/web-console.md).
+- Rotate the key with `uv run chatpass key rotate`. The old key stops working immediately, so update clients; this does not rotate upstream account credentials.
+- Use the same data directory for all commands. Windows defaults to `%LOCALAPPDATA%\ChatPass`. Example override: `uv run chatpass --data-dir D:\ChatPassData serve --port 19841`.
+- ChatPass does not isolate malware running as the same OS user. Never publish keys, tokens, callback links or full conversations.
+
+### Recovery
+
+- Authorization timeout or cancellation: run `login` again.
+- An uncertain refresh result or process exit during refresh: stop requests and sign in again to avoid reusing a rotated token. A durably saved token pending validation is only revalidated; the old refresh request is not repeated.
+- Upstream 401/403/429: check authorization, account eligibility and quota. ChatPass does not automatically switch to a separately billed API or replay inference requests.
+- Installation TLS errors: configure the correct system certificates and use `--system-certs` where necessary; do not disable verification.
+
+## Development and licensing
+
+### Development
 
 ```powershell
 uv sync --locked --group dev
@@ -123,16 +142,12 @@ uv run ruff check src tests
 uv build
 ```
 
-Configure a correct system certificate chain if your package-index proxy requires one; uv's `--system-certs` option may be appropriate on managed machines. Do not disable certificate verification.
+Further reading: [design](docs/design.md) · [implementation plan](docs/implementation-plan.md) · [work status](docs/work-status.md) · [protocol notes](docs/protocol-notes.md) · [verification](docs/verification.md).
 
-[Design](docs/design.md) · [Implementation plan](docs/implementation-plan.md) · [Work checkpoint](docs/work-status.md)
+### License and disclaimer
 
-## Licensing and affiliation
+ChatPass is not affiliated with OpenAI, an official OpenAI product or an approved partner integration. **A public protocol is not official endorsement; successful OAuth sign-in does not itself grant plan usage permission.** Actual upstream authorization and applicable terms govern use. Paid or remotely hosted apps require separate verification of OpenAI's access requirements.
 
-ChatPass is not affiliated with or endorsed by OpenAI. Use must comply with service terms and dependency licenses.
+Original ChatPass code and documentation use the [MIT License](LICENSE), allowing use, modification, distribution, commercial use and closed-source redistribution with copyright and license notices retained. The software is provided as-is without warranty. **MIT grants software rights, not rights to OpenAI services or trademarks.**
 
-**ChatPass's original code and documentation are licensed under [MIT](LICENSE)**, with `Copyright (c) 2026 ChatPass contributors`. Use, modification, distribution, commercial use and closed-source redistribution are permitted; copies or substantial portions must retain the copyright and permission notices. The software is provided as is, without warranty.
-
-The vendored Tabler stylesheet retains its authors' separate MIT notice; see [third-party notices](THIRD_PARTY_NOTICES.md). Python dependencies retain their own licenses rather than being relicensed as MIT. The wheel and source distribution include the project license, third-party notices and complete Tabler license.
-
-**MIT licenses the ChatPass software, not access to OpenAI services or trademarks.** Account eligibility, subscription quotas, commercial scenarios and remote services remain subject to applicable upstream terms and authorization; this version remains loopback-only. The official DevKit has a separate custom noncommercial license. Its code, documentation and assets are not copied or bundled here and are not relicensed under ChatPass's MIT license.
+The console uses Tabler 1.6.1 (MIT), bundled locally without a CDN, remote fonts or telemetry. See [third-party notices](THIRD_PARTY_NOTICES.md) for license and copyright notices. Python dependencies retain their own licenses. The official DevKit has a separate custom non-commercial license; this implementation does not copy or bundle its code, documentation or assets.
