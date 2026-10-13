@@ -6,11 +6,29 @@
 
 [简体中文](README.md) | **English**
 
-**Connect your agent tools to your ChatGPT subscription.**
+**A local gateway for individual agent users, built on ChatGPT's public authorization protocol.**
 
-A local-first Responses gateway. Clients receive a ChatPass access key; upstream OAuth credentials stay on the gateway.
+Use Sign in with ChatGPT to explicitly grant ChatGPT plan usage permission, then connect your own agent tools within that authorization. Clients receive a ChatPass access key; upstream OAuth credentials stay on the local gateway. ChatPass does not copy subscription credentials from other tools, pool accounts or resell quota.
 
 > **Status: initial implementation with mock testing, not verified against a real account or installed clients.** Account eligibility, quota accounting and Hermes/OpenClaw/DeepSeek Harness compatibility remain unverified. Remote deployment is not supported in this version.
+
+## Positioning and differences from subscription proxies
+
+ChatPass is for **one person connecting their own agent tools on the same machine**, not a subscription relay business or multi-user API platform. It is still a gateway/proxy in network terms. The distinction is not whether it uses OAuth or forwards requests, but **what permission is granted, which upstream interface it calls, and whom it serves**.
+
+| Dimension | ChatPass's choice | Approaches other subscription proxies may use |
+| --- | --- | --- |
+| Authorization | Sign in with ChatGPT under the ChatPass app name, dynamic client registration and explicit `chatgpt.tokens.use.direct` plan usage permission | OAuth flows for tools such as Codex, or imported tool credentials; OAuth alone does not imply the same permission |
+| Upstream | Public `https://api.openai.com/v1/models` and `/v1/responses` | Some projects adapt private backends such as `chatgpt.com/backend-api/codex/*`; a client-facing `/v1` URL does not identify the upstream |
+| Audience | One individual, one account, local access from their own clients | Some are also personal proxies; others target account scheduling, multi-user key distribution, shared quota or billing |
+| Credentials | Independently obtained and protected credentials; clients receive only a separate gateway key | Implementations vary; OAuth, separate keys and encrypted storage are not unique to ChatPass |
+| Explicit non-goals | Account pools, subscription resale, provider aggregation, automatic separately billed API fallback and public hosting | Some platforms focus on these capabilities; their features and deployment instructions do not apply to ChatPass |
+
+For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) describes itself as a subscription quota distribution and management platform, with multiple accounts, user API keys, billing and scheduling. **ChatPass does not target that operating model.** [codex-sub-proxy](https://github.com/tech-grandpa/codex-sub-proxy) is closer to a personal subscription proxy but explicitly uses the private Codex backend. These illustrate different approaches, not a claim that all subscription proxies use private interfaces or a blanket judgment about their security or legality.
+
+**A public protocol is not official endorsement or a general-purpose API entitlement.** [OpenAI's public documentation](https://developers.openai.com/siwc/token-sharing-open-source) describes ChatGPT plan usage permission for open-source, locally hosted apps. ChatPass independently implements that path; it is not an official OpenAI product or an approved partner integration. Successful OAuth sign-in alone is insufficient: actual plan usage permission, account eligibility, quota and applicable terms still govern requests. Paid or remotely hosted apps require separate verification of OpenAI's access requirements; the MIT software license does not grant rights to upstream services.
+
+The official [Sign in with ChatGPT DevKit](https://github.com/openai/sign-in-with-chatgpt-devkit) helps developers embed authorization and inference into their apps. ChatPass instead aims to give existing tools a configurable local endpoint and a separate access key. This is a product-format distinction, not a claim to have invented OAuth, encryption or streaming proxies. See [protocol and license evidence](docs/protocol-notes.md). Real-account and client compatibility remain unverified.
 
 ## Implemented boundary
 

@@ -33,7 +33,7 @@ Mode: auto. Decision: strict. Authority: writing-plans auto route for public API
 ## Tasks
 
 1. **Project setup and Chinese documentation**
-   - Files: `README.zh-CN.md`, `README.md`, `pyproject.toml`, `.gitignore`.
+   - Files: `README.md` (Chinese), `README.en.md` (English), `pyproject.toml`, `.gitignore`.
    - Package Python dependencies and CLI entry point; record license facts without selecting an unapproved project license.
    - Verify installation/import and bilingual links.
 2. **Configuration and encrypted state**

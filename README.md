@@ -6,11 +6,29 @@
 
 **简体中文** | [English](README.en.md)
 
-**将自己的 ChatGPT 订阅接入 Agent 工具。**
+**面向个人 Agent 用户的 ChatGPT 公开授权协议本地网关。**
 
-本地优先的 Responses API 网关：客户端只持有 ChatPass 访问密钥，官方 OAuth 凭据保存在网关端。
+通过 Sign in with ChatGPT，由你明确授予 ChatGPT 计划使用权限，再将授权范围内的能力接入自己的 Agent 工具。客户端只持有 ChatPass 访问密钥，上游 OAuth 凭据保存在本机网关端；不复制其他工具的订阅凭据，不做账号池或额度转售。
 
 > **状态：初始实现，已进行模拟测试；尚未完成真实账号和客户端实测。** 不承诺所有订阅账号均有资格、无限额度，或 Hermes / OpenClaw / DeepSeek Harness 已可直接接入。服务器部署只是未来边界，本版拒绝非回环监听。
+
+## 定位与同类项目的区别
+
+ChatPass 服务于**一个人在本机连接自己的 Agent 工具**，不是订阅中转站或多用户 API 运营平台。从网络结构看，它仍然是网关/代理；区别不在于“有没有 OAuth”或“是否转发请求”，而在于**授权范围、上游接口和服务对象**。
+
+| 对比维度 | ChatPass 的选择 | 其他订阅代理/中转项目可能采用的方式 |
+| --- | --- | --- |
+| 授权来源 | 以 ChatPass 的应用名称发起 Sign in with ChatGPT，动态注册客户端，并请求 `chatgpt.tokens.use.direct` 计划使用权限 | 使用 Codex 等工具的 OAuth 登录流程，或导入已有工具凭据；同样使用 OAuth 不代表获得相同权限 |
+| 上游接口 | 公共 `https://api.openai.com/v1/models` 与 `/v1/responses` | 部分项目适配 `chatgpt.com/backend-api/codex/*` 等私有后端；客户端侧的 `/v1` 地址本身不能说明上游是哪一种 |
+| 服务对象 | 个人、本机、单账号，供自己的客户端接入 | 有的也是个人代理；另一些面向多账号调度、多用户 Key 分发、共享额度或计费运营 |
+| 凭据边界 | 本项目自行取得并保护凭据，客户端只持有独立网关密钥 | 各项目实现不同；OAuth、独立 Key 和加密存储并非 ChatPass 独有能力 |
+| 明确不做 | 账号池、订阅转售、多厂商聚合、按量付费 API 自动降级及公网服务 | 部分平台以这些能力为主要目标；不能将其功能或部署方式套用到 ChatPass |
+
+例如，[Sub2API](https://github.com/Wei-Shaw/sub2api) 的仓库定位是订阅额度分发与管理平台，包含多账号管理、用户 API Key 分发、计费和调度；**ChatPass 不面向这类运营场景**。[codex-sub-proxy](https://github.com/tech-grandpa/codex-sub-proxy) 则更接近个人订阅代理，但明确使用 Codex 私有后端。以上是不同路线的例子，不代表所有同类项目都使用私有接口，也不是对它们的安全性或合法性作统一判断。
+
+**公开协议不等于官方背书，也不等于通用 API 套餐。** [OpenAI 的公开说明](https://developers.openai.com/siwc/token-sharing-open-source)描述了开源、本地应用请求 ChatGPT 计划使用权限的路径；ChatPass 按该路径独立实现，而非 OpenAI 官方产品或已获批准的合作项目。仅有 OAuth 登录成功还不够，必须实际获授计划使用权限，并满足账号资格、额度及适用条款。付费或远程托管应用须另行核实官方准入要求；MIT 软件许可不授予上游服务使用权。
+
+官方 [Sign in with ChatGPT DevKit](https://github.com/openai/sign-in-with-chatgpt-devkit) 主要帮助开发者将授权与推理嵌入自己的应用；ChatPass 的目标则是为已有工具提供可配置的本地地址和独立访问密钥。这是产品形态的区别，不是宣称授权、加密或流式转发技术首创。协议依据与许可边界见 [协议说明](docs/protocol-notes.md)；真实账号和客户端兼容性仍须验证。
 
 ## 已实现的范围
 
