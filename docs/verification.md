@@ -86,6 +86,30 @@ Remove-Item Env:CHATPASS_NATIVE_KEYRING_TEST
 - 原有 30 毫秒 SSE 测试在负载下可能在响应头前合法超时，不能稳定证明“正在流式传输时截断”。仅将该测试预算设为 0.5 秒、外层等待设为 2 秒；未释放的流 gate 仍保证发生超时，并保留 200、净化错误、无伪完成和关闭流的断言。生产超时语义未改；流截止从鉴权完成后开始，鉴权另有独立超时。
 - 浏览器 fake-clock 回归等待实际刷新响应完成，再推进下一次轮询；过期会话通过重新加载稳定触发 GET 校验，避免测试点击已被轮询锁屏隐藏的按钮。这是测试竞态修正，不是界面绕过。
 
+## MIT 许可与打包验证（2026-10-13）
+
+本轮许可改动以 `main` / `0eb8377` 为基线，使用 Git 已提交源文件加本轮许可文件的隔离快照验证；工作区当时已有的管理台前端及浏览器测试修改没有纳入此证据或提交范围。
+
+- 自有代码与文档采用标准 [MIT](../LICENSE)，版权为 `ChatPass contributors`；Tabler 完整原作者声明与样式字节保留，Python 依赖和上游服务权限不重新许可。
+- 包配置使用 PEP 639 的 `license = "MIT"`、明确的 `license-files`，补齐作者、关键词、Alpha 分类及仓库/问题/文档地址；不使用已弃用的许可证分类器。
+- [打包回归](../tests/test_packaging.py)：显式构建检查 **3 通过**（3.57 秒）；隔离完整回归 **263 通过、3 跳过**（19.38 秒）。三项默认跳过分别为原生 keyring、真实浏览器及构建检查；构建检查已另行显式执行。
+- Ruff、46 个包的锁文件检查及 Git 空白检查通过；依赖与锁定版本没有改变。
+- wheel 的 `METADATA` 与源码包的 `PKG-INFO` 均声明 `License-Expression: MIT` 及三个 `License-File`。项目 MIT、第三方声明、Tabler 完整许可在两个包内均与源文件字节一致；wheel 的 `.dist-info/licenses/` 及样式旁保留声明。内置静态资源完整且字节一致，包不含运行状态、凭据、缓存或环境目录。
+- Python 3.11.9 非 editable 安装验证通过：安装后元数据及三个声明与源文件一致，`chatpass --help`、`web --help`、`serve --help` 可运行。没有读取现有账号凭据、进行官方登录或访问上游服务。
+
+可复现的许可与发布包检查：
+
+```powershell
+uv sync --locked --group dev
+uv run pytest tests/test_packaging.py -q
+$env:CHATPASS_PACKAGE_TEST = "1"
+uv run pytest tests/test_packaging.py -q -s
+Remove-Item Env:CHATPASS_PACKAGE_TEST
+uv build
+```
+
+显式构建检查需要 uv 和可信包索引证书；只构建与检查发布包，不启动服务或使用账号。它不替代真实服务及客户端验收。
+
 ## 仍未验证与已知边界
 
 - **真实官方登录/推理/刷新、账号资格与额度扣减：未验证。** 测试签名及响应不能证明这些能力。
@@ -93,6 +117,6 @@ Remove-Item Env:CHATPASS_NATIVE_KEYRING_TEST
 - **远程/公网部署：不支持。** 本版拒绝非回环绑定，未完成 TLS、管理权限分离、用户配额与公网加固。
 - **macOS/Linux 原生 keyring：未实测。** 无可用受支持安全后端时拒绝保存，不降级为明文。
 - Python 无法安全终止已运行的同步 keyring/浏览器线程。若后端永久挂起，有界容量将保持占用，关闭等待也可能延长；HTTP 请求仍受超时约束，后续请求可返回 429。修复后端并重启，而不是不断提交替代任务。
-- 项目许可证尚未选定，也未发布到 PyPI；不能把公开仓库称为已获得宽松开源授权。
+- ChatPass 自有代码和文档已采用 [MIT](../LICENSE)，第三方许可保持独立；此许可不授予上游服务资格。尚未发布到 PyPI。
 
 初始代码与本地模拟验证可以完成，真实服务及三客户端验收仍需用户主动登录与授权测试。任何报告都应保留这一分界。

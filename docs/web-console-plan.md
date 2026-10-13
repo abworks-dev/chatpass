@@ -15,7 +15,7 @@ Collection: GitHub `gh api` and npm registry with Python/httpx, 2026-10-13; two 
 - Integrity: `sha512-lgmR9gcxRp5JlLxcmRi9Rz85JrEvH6Bz71KnlcPVSa97wtwQNjgSs3g3fxwbAlulHyRMghhIV04QUuW3pqDsIg==`
 - Selected asset: `package/dist/css/tabler.min.css`; inspected CSS URL references contain no external resources. Preserve original file bytes and header. Do not vendor unrelated package libraries with different licenses.
 
-Tabler's MIT license covers the vendored template only; ChatPass's own license remains unselected.
+Tabler's MIT license covers the vendored template and retains its original authors' notice. ChatPass subsequently adopted its own MIT license for original code and documentation; project and Tabler notices remain separate (see `LICENSE` and `THIRD_PARTY_NOTICES.md`).
 
 ## Scope and UI behavior
 

@@ -109,4 +109,8 @@ Configure a correct system certificate chain if your package-index proxy require
 
 ChatPass is not affiliated with or endorsed by OpenAI. Use must comply with service terms and dependency licenses.
 
-**A project license has not yet been selected.** Public visibility alone grants no open-source license. The official DevKit uses a custom noncommercial license; its code has not been copied into this independent implementation. Protocol interoperability is not permission for commercial use or remote hosting.
+**ChatPass's original code and documentation are licensed under [MIT](LICENSE)**, with `Copyright (c) 2026 ChatPass contributors`. Use, modification, distribution, commercial use and closed-source redistribution are permitted; copies or substantial portions must retain the copyright and permission notices. The software is provided as is, without warranty.
+
+The vendored Tabler stylesheet retains its authors' separate MIT notice; see [third-party notices](THIRD_PARTY_NOTICES.md). Python dependencies retain their own licenses rather than being relicensed as MIT. The wheel and source distribution include the project license, third-party notices and complete Tabler license.
+
+**MIT licenses the ChatPass software, not access to OpenAI services or trademarks.** Account eligibility, subscription quotas, commercial scenarios and remote services remain subject to applicable upstream terms and authorization; this version remains loopback-only. The official DevKit has a separate custom noncommercial license. Its code, documentation and assets are not copied or bundled here and are not relicensed under ChatPass's MIT license.
