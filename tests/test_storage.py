@@ -29,6 +29,8 @@ def test_encrypted_roundtrip_and_gateway_key(tmp_path):
     rotated = store.rotate_gateway_key()
     assert store.verify_gateway_key(rotated)
     assert not store.verify_gateway_key(key)
+    assert StateStore(tmp_path, backend=backend).get_gateway_key() == rotated
+    assert rotated.encode() not in store.path.read_bytes()
 
 
 def test_corruption_fails_closed(tmp_path):
@@ -71,6 +73,32 @@ def test_missing_master_key_cannot_overwrite_existing_state(tmp_path):
     with pytest.raises(StorageError):
         StateStore(tmp_path, backend=MemoryKeyring()).rotate_gateway_key()
     assert store.path.read_bytes() == original
+
+
+def test_legacy_hash_remains_valid_without_implicit_rotation(tmp_path):
+    store = StateStore(tmp_path, backend=MemoryKeyring())
+    key = store.initialize_gateway_key()
+    with store.transaction() as state:
+        state.pop('gateway_key')  # Simulate a pre-upgrade encrypted state.
+    original = store.path.read_bytes()
+    assert store.get_gateway_key() is None
+    assert store.verify_gateway_key(key)
+    assert store.path.read_bytes() == original
+    with pytest.raises(StorageError, match='already exists'):
+        store.initialize_gateway_key()
+    successor = store.rotate_gateway_key()
+    assert store.get_gateway_key() == successor
+    assert not store.verify_gateway_key(key)
+
+
+@pytest.mark.parametrize('value', ['cp_wrong-secret', 123, 'cp_' + 'x' * 300])
+def test_recoverable_key_must_match_hash(tmp_path, value):
+    store = StateStore(tmp_path, backend=MemoryKeyring())
+    store.initialize_gateway_key()
+    with store.transaction() as state:
+        state['gateway_key'] = value
+    with pytest.raises(StorageError, match='Stored gateway key is invalid'):
+        store.get_gateway_key()
 
 
 def test_invalid_key_does_not_create_state(tmp_path):

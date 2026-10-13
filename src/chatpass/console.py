@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import httpx
@@ -40,6 +42,8 @@ _SECURITY_HEADERS = {
 _LOGIN_CODES = frozenset({
     "login_timeout", "login_already_running", "consent_denied", "registration_incomplete",
     "identity_verification_unavailable", "login_required", "authorization_failed",
+    "id_token_not_yet_valid", "scope_not_authorized", "account_mismatch",
+    "pending_token_validation", "refresh_not_yet_allowed",
 })
 
 
@@ -96,6 +100,7 @@ class _ConsoleState:
         self.login_state = "idle"
         self.login_code: str | None = None
         self.login_task: asyncio.Task[None] | None = None
+        self.login_link: tuple[str, float] | None = None
         self.storage_tasks: set[asyncio.Task[Any]] = set()
         self.models_active = False
         self.models_error: gateway._GatewayError | None = None
@@ -228,13 +233,21 @@ class _ConsoleBoundary:
                 self.state.failed += int(failed)
 
 
-def credential_status(state: dict[str, Any], *, now: float | None = None) -> dict[str, bool]:
+def credential_status(state: dict[str, Any], *, now: float | None = None) -> dict[str, bool | int]:
     """Pure sanitized credential presentation shared with the CLI status command."""
     current = state.get("credentials", {})
+    clock = time.time() if now is None else now
+    enabled = bool(current) and not state.get("login_required", False) and not state.get("refresh_in_progress", False)
+    earliest = current.get("earliest_refresh_at", 0)
+    wait = (min(31536000, math.ceil(max(0, earliest - clock)))
+            if isinstance(earliest, (int, float)) and not isinstance(earliest, bool)
+            and math.isfinite(earliest) else 0)
     return {
+        "account_signed_in": bool(current or state.get("signed_in_identity")),
+        "plan_use_enabled": enabled,
+        "refresh_wait_seconds": wait,
         "gateway_key_configured": bool(state.get("gateway_key_hash")),
-        "account_authorized": bool(current) and not state.get("login_required", False)
-        and not state.get("refresh_in_progress", False),
+        "account_authorized": enabled,
         "access_token_expired": bool(current) and current.get("expires_at", 0)
         <= (time.time() if now is None else now),
         "pending_token_validation": "pending_tokens" in state,
@@ -243,7 +256,7 @@ def credential_status(state: dict[str, Any], *, now: float | None = None) -> dic
     }
 
 
-def _snapshot(store: StateStore) -> dict[str, bool]:
+def _snapshot(store: StateStore) -> dict[str, bool | int]:
     return credential_status(store.read() if store.path.exists() else {})
 
 
@@ -269,6 +282,7 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
                 yield
             finally:
                 state.closing = True
+                state.login_link = None
                 # to_thread cancellation does not stop a login/browser/storage worker.
                 # Keep ownership and wait through its existing bounded login deadline.
                 with anyio.CancelScope(shield=True):
@@ -327,6 +341,16 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
             "login": {"state": state.login_state, "code": state.login_code},
         })
 
+    @app.get("/admin/api/key")
+    async def saved_key() -> dict[str, str | None]:
+        try:
+            key = await state.storage(store.get_gateway_key, settings.timeout_seconds)
+        except gateway._GatewayError:
+            raise
+        except Exception:
+            raise _error(503, "storage_unavailable") from None
+        return {"key": key}
+
     @app.post("/admin/api/key")
     async def issue_key(request: Request) -> dict[str, str]:
         body = await _json_body(request, timeout=settings.timeout_seconds)
@@ -346,9 +370,71 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
             raise _error(503, "storage_unavailable") from None
         return {"key": key}
 
-    async def run_login() -> None:
+    @app.post("/admin/api/logout")
+    async def sign_out(request: Request) -> dict:
+        body = await _json_body(request, timeout=settings.timeout_seconds)
+        if set(body) != {"new_account"} or type(body["new_account"]) is not bool:
+            raise _error(400, "invalid_action")
+        if state.login_task is not None and not state.login_task.done():
+            raise _error(409, "login_already_running")
         try:
-            await asyncio.to_thread(login_runner or login, store, emit=lambda *_: None)
+            result = await state.storage(
+                lambda: credentials.logout(new_account=body["new_account"]),
+                settings.timeout_seconds,
+            )
+        except OAuthError as exc:
+            if exc.code == "login_already_running":
+                raise _error(409, "login_already_running") from None
+            raise _error(503, "logout_failed") from None
+        except StorageError:
+            raise _error(503, "storage_unavailable") from None
+        state.login_state, state.login_code = "idle", None
+        state.login_link = None
+        return result
+
+    def capture_login_link(url: str, expires: float) -> None:
+        if state.closing or state.login_state != "running":
+            return
+        try:
+            if (not isinstance(url, str) or len(url) > 8192
+                    or isinstance(expires, bool) or not isinstance(expires, (int, float))
+                    or not math.isfinite(expires) or expires <= time.monotonic()):
+                return
+            parts = urlsplit(url)
+            query = parse_qs(parts.query, max_num_fields=20, keep_blank_values=True)
+            allowed = {"client_id", "response_type", "redirect_uri", "scope", "resource",
+                       "state", "nonce", "code_challenge_method", "code_challenge",
+                       "ext_agent_host_id", "agent_name_hint"}
+            if (len(url) > 8192 or parts.scheme != "https" or parts.netloc != "auth.openai.com"
+                    or parts.username or parts.password or parts.fragment
+                    or not set(query).issubset(allowed)
+                    or any(len(value) != 1 for value in query.values())
+                    or not {"state", "nonce", "code_challenge"}.issubset(query)):
+                return
+            state.login_link = (url, min(expires, time.monotonic() + 180))
+        except (ValueError, TypeError):
+            return
+
+    @app.get("/admin/api/login-link")
+    async def login_link() -> dict:
+        link = state.login_link
+        if (state.closing or state.login_state != "running" or link is None
+                or time.monotonic() >= link[1]):
+            state.login_link = None
+            return {"url": None, "expires_in_seconds": 0}
+        return {"url": link[0], "expires_in_seconds": max(1, int(link[1] - time.monotonic()))}
+
+    async def run_login() -> None:
+        loop = asyncio.get_running_loop()
+        def on_authorization(url: str, expires: float) -> None:
+            loop.call_soon_threadsafe(capture_login_link, url, expires)
+        try:
+            if login_runner is None:
+                await asyncio.to_thread(login, store, emit=lambda *_: None,
+                                        on_authorization=on_authorization)
+            else:
+                # Existing injected runners remain source-compatible; no retry.
+                await asyncio.to_thread(login_runner, store, emit=lambda *_: None)
         except OAuthError as exc:
             state.login_state = "failed"
             state.login_code = exc.code if exc.code in _LOGIN_CODES else "authorization_failed"
@@ -358,6 +444,8 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
             state.login_state, state.login_code = "failed", "authorization_failed"
         else:
             state.login_state, state.login_code = "succeeded", None
+        finally:
+            state.login_link = None
 
     @app.post("/admin/api/login")
     async def start_login(request: Request) -> JSONResponse:
@@ -368,7 +456,10 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
             raise _error(503, "console_unavailable")
         if state.login_task is not None and not state.login_task.done():
             raise _error(409, "login_already_running")
+        if state.storage_tasks:
+            raise _error(429, "console_busy")
         state.login_state, state.login_code = "running", None
+        state.login_link = None
         state.login_task = asyncio.create_task(run_login())
         return JSONResponse({"state": "running"}, status_code=202)
 

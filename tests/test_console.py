@@ -251,9 +251,44 @@ async def test_key_init_and_rotation_are_explicit(setup):
     assert rotated.json()["key"] != key
     assert not setup.store.verify_gateway_key(key)
     assert setup.store.verify_gateway_key(rotated.json()["key"])
+    assert (await setup.client.get('/admin/api/key')).json() == rotated.json()
     status = await setup.client.get("/admin/api/status")
     assert key not in status.text and rotated.json()["key"] not in status.text
     assert (await setup.client.post("/admin/api/key", json={"action": "delete"}, headers=headers)).status_code == 400
+
+
+async def test_saved_key_requires_management_session_and_is_not_cached(setup):
+    key = setup.store.initialize_gateway_key()
+    response = await setup.client.get('/admin/api/key', headers={'Authorization': 'Bearer ' + key})
+    assert response.status_code == 401 and key not in response.text
+    await authorize(setup.client)
+    response = await setup.client.get('/admin/api/key')
+    assert response.status_code == 200 and response.json() == {'key': key}
+    assert response.headers['cache-control'] == 'no-store'
+    cross_origin = await setup.client.get('/admin/api/key', headers={'Origin': 'http://evil.example'})
+    assert cross_origin.status_code == 403 and key not in cross_origin.text
+    bad_host = await setup.client.get('/admin/api/key', headers={'Host': 'evil.example'})
+    assert bad_host.status_code == 403 and key not in bad_host.text
+    setup.app.state.console_state.session_expires = time.monotonic() - 1
+    response = await setup.client.get('/admin/api/key')
+    assert response.status_code == 401 and key not in response.text
+
+
+async def test_saved_key_legacy_and_storage_failure_are_safe(setup, monkeypatch):
+    await authorize(setup.client)
+    assert (await setup.client.get('/admin/api/key')).json() == {'key': None}
+    key = setup.store.initialize_gateway_key()
+    with setup.store.transaction() as saved:
+        saved.pop('gateway_key')
+    assert (await setup.client.get('/admin/api/key')).json() == {'key': None}
+    assert setup.store.verify_gateway_key(key)
+
+    def broken():
+        raise StorageError(SECRET)
+
+    monkeypatch.setattr(setup.store, 'get_gateway_key', broken)
+    response = await setup.client.get('/admin/api/key')
+    assert response.status_code == 503 and SECRET not in response.text
 
 
 async def test_status_only_sanitized_actual_fields_and_admin_excluded_from_metrics(setup):
@@ -435,11 +470,13 @@ async def test_login_single_running_and_shutdown_joins_real_worker(tmp_path):
 
 
 @pytest.mark.parametrize("failure,code", [(OAuthError("login_timeout"), "login_timeout"),
+                                         (OAuthError("id_token_not_yet_valid"),
+                                          "id_token_not_yet_valid"),
                                          (OAuthError(SECRET), "authorization_failed"),
                                          (StorageError(SECRET), "storage_unavailable"),
                                          (RuntimeError(SECRET), "authorization_failed")])
 async def test_login_failure_codes_are_bounded_and_sanitized(setup, monkeypatch, failure, code):
-    def runner(store, *, emit):
+    def runner(store, *, emit, on_authorization=None):
         raise failure
 
     monkeypatch.setattr("chatpass.console.login", runner)

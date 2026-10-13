@@ -148,6 +148,20 @@ class StateStore:
             if require_absent and state.get("gateway_key_hash"):
                 raise StorageError("A gateway key already exists. Use key rotate to replace it.")
             state["gateway_key_hash"] = hashlib.sha256(value.encode()).hexdigest()
+            state["gateway_key"] = value
+        return value
+
+    def get_gateway_key(self) -> str | None:
+        """Read the recoverable key from encrypted state; legacy hashes stay valid."""
+        state = self.read()
+        value = state.get("gateway_key")
+        if value is None:
+            return None
+        expected = state.get("gateway_key_hash")
+        if (not isinstance(value, str) or not value.startswith("cp_")
+                or not 16 <= len(value) <= 256 or not isinstance(expected, str)
+                or not hmac.compare_digest(hashlib.sha256(value.encode()).hexdigest(), expected)):
+            raise StorageError("Stored gateway key is invalid.")
         return value
 
     def verify_gateway_key(self, value: str) -> bool:
