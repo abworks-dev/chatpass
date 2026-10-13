@@ -22,8 +22,11 @@ class Settings:
     max_body_bytes: int = 1048576
     max_concurrency: int = 8
     timeout_seconds: float = 120.0
+    compatibility_mode: str = "compatible"
 
     def __post_init__(self):
+        if self.compatibility_mode not in ("compatible", "strict"):
+            raise ValueError("Compatibility mode must be compatible or strict.")
         try:
             local = ip_address(self.host).is_loopback
         except ValueError:

@@ -2,7 +2,7 @@
 
 **验证日期：2026-10-13。** Windows 本地网关与 Web 管理台；范围依据为 [设计](design.md)、[初始实施计划](implementation-plan.md) 与 [管理台计划](web-console-plan.md)。本文件区分代码行为证据和真实服务验收，不把模拟结果写成账号或客户端成功。
 
-## 最后一次验证结果
+## 历史验证结果（Web 管理台初始实现）
 
 - Windows / Python 3.11.9，最终全量普通测试：**258 passed, 2 skipped**，17.67 秒；跳过项是显式可选的原生 keyring 与真实浏览器测试。
 - 原生 Windows keyring 测试单独显式执行：**1 passed**，0.40 秒；仅使用随机隔离测试服务。
@@ -12,6 +12,33 @@
 - 两个分发包的五项静态资源逐字节与源码匹配，Tabler CSS SHA-256 与第三方声明一致；完整 MIT 文本存在。非编辑安装后的控制台和静态 HTTP 路由成功，不读取系统凭据、不发送上游请求。
 - 分发包未包含运行状态、凭据文件、开发虚拟环境或 Python 缓存；没有发布 PyPI 包、创建发布标签或自动执行真实登录。
 - 两个新增只读独立审查范围无剩余具体 Critical/Important 问题。后端审查独立执行 **221 项测试**及四种 worker/client 生命周期探针；前端审查独立验证轮询截止、显式重启、规范错误恢复与许可一致性。结论是咨询性代码审查，不是生产发布或真实服务验收。
+
+## 本次兼容层提交前验证
+
+- 按用户指定范围，从 Git 暂存区导出独立快照；包含兼容层、流检测诊断、文档及精确的接入文案/浏览器断言，不含已有 OAuth、凭据与管理台重设计改动。
+- 独立快照完整离线回归：**489 passed, 3 skipped**，27.04 秒；Ruff `All checks passed`，暂存差异 whitespace 检查通过。跳过原生 keyring、浏览器、分发包 opt-in 测试；浏览器另外执行。
+- 独立快照 headless Edge 回归：**1 passed**，4.91 秒；使用隔离模拟凭据/上游，不发起真实授权或推理。
+- 先前经用户授权的有限真实诊断中，`gpt-6.1-sol` 基础流式、带工具字段请求及函数调用/结果回传两轮均达到 `response.completed`。用户随后确认 DSH 新会话的问候和原问题成功；旧会话历史/状态的具体故障原因仍未确认。
+- 已知未修复缺口：真实工具完成事件包含调用，但最终快照 `output` 为空；当前非流式聚合器不重建这些输出。离线回归通过不证明非流式/Chat 已完整兼容真实上游，详情见 [客户端边界](clients.md) 与 [工作记录](work-status.md)。
+- 临时诊断程序不进入提交；没有将凭据或真实响应正文写入验证记录。
+
+## 协议适配层跟进验证（历史）
+
+- 当前源码完整普通回归：**462 passed, 3 skipped**，24.12 秒；Ruff `All checks passed`，`git diff --check` 成功。跳过原生 keyring、浏览器和分发包 opt-in 测试；浏览器另行验证如下。
+- 隔离 headless Edge 回归：**1 passed**，4.85 秒。新增断言验证接入说明展示 Chat、忽略字段响应头及严格模式；包含已有管理会话、密钥与响应式布局流程。未使用真实凭据或上游。
+- 独立只读审查复现并促成两项修复：多消息/内容项流式文本顺序与终态不一致时不得成功；SDK 可空缺省字段不得误拒绝。修复后独立 adapter/bridge 定向复查 **152 passed**，未发现这两处剩余 Important 问题。
+- 覆盖 Responses 与 Chat 四种请求模式、默认兼容/严格拒绝、CLI 配置传递、函数工具轮/参数增量/使用量/JSON Schema、截断/失败/超时/取消清理。原生 Responses 保留 opaque reasoning；Chat 未支持的输出明确失败。
+- 初次沙箱回归的跨进程 Queue 命名管道被 Windows 文件策略阻挡；宽权限重新执行后全量通过，未调整生产逻辑或把测试跳过伪装成通过。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\.venv\Scripts\ruff.exe check --no-cache src tests
+$env:CHATPASS_BROWSER_TEST = "1"
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests/test_web_browser.py
+Remove-Item Env:CHATPASS_BROWSER_TEST
+```
+
+本次没有重新发布、实测官方推理或修改真实客户端配置。忽略调参字段并不实现其含义，尤其不保证输出 token 上限；真实客户端仍按 [客户端验收](clients.md) 验证。
 
 ## 可以复现的自动验证
 

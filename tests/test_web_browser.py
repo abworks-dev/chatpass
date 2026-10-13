@@ -116,6 +116,11 @@ async def test_real_browser_console_security_and_key_flow(tmp_path):
                 await page.locator('[data-model-choice="isolated-model"]').click()
                 await page.locator('[data-view="clients"]').click()
                 assert await page.locator("#client-model-id").text_content() == "isolated-model"
+                guidance = await page.locator(".protocol-note").text_content()
+                assert "Chat Completions" in guidance
+                assert "X-ChatPass-Ignored-Fields" in guidance
+                assert "--compatibility-mode strict" in guidance
+                assert "不支持 Chat Completions" not in guidance
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 390, "height": 844})
                 await page.locator("#menu-toggle").click()

@@ -1,4 +1,21 @@
-# Initial implementation checkpoint
+# Implementation checkpoints
+
+## Follow-up: protocol compatibility adapters
+
+Authorized scope: Sub2API-inspired edge normalization without changing the public direct-sharing upstream or credential ownership. Added default compatible / optional strict mode (serve and web), Responses nonstream aggregation and Chat Completions streaming/nonstreaming bridge. Upstream remains public `/v1/responses`, forced streaming/store false; no private Codex route, retry, paid fallback, account pooling or real credential use. Native Responses preserves reasoning/custom tools; Chat's narrower documented subset fails explicitly for unsupported outputs. Removed the previous inline request normalizer in favor of one adapter owner; bounded transport/resource/error owners remain shared.
+
+Independent read-only review reproduced and closed global multi-part text ordering and SDK nullable-history bugs. Final full regression: **462 passed, 3 skipped** (24.12s); Ruff and whitespace checks passed. Opt-in isolated Edge regression: **1 passed** (4.85s), including corrected client instructions. [Verification](verification.md) and [client guide](clients.md) record commands and supported boundaries. Three skipped opt-in checks do not prove package/keyring service acceptance.
+
+Implementation and mock validation are complete; real account/client compatibility remains unverified. Existing unrelated working-tree changes were retained, no staging/commit/push or live client/server reconfiguration was performed. Restart ChatPass to load new code, then run the user-controlled acceptance checks; ignored sampling/output-limit fields do not take effect.
+
+
+## Follow-up: real DSH stream-failure diagnosis
+
+After user authorization, bounded live diagnostics exercised the public upstream and the configured loopback gateway with `gpt-6.1-sol`. Basic streaming, a request with function tools/reasoning fields, and a two-request function-call/result roundtrip reached `response.completed`. The configured DSH route uses `openai-responses` at `http://127.0.0.1:19840/v1`. These probes did not reproduce `Upstream stream did not complete successfully.` Credentials remained in memory; diagnostic output contained only allowlisted event/error categories, not response text or tokens. Temporary probe scripts were removed.
+
+The user then confirmed both a greeting and the original context-window question succeed in a fresh DSH conversation with `gpt-6.1-sol`. This establishes a fresh-conversation recovery and narrows the remaining investigation to differences in the failing conversation's request/history/state. It does **not** identify a particular corrupt item or prove the old conversation is repaired. No production code was changed during this diagnostic phase; existing work was preserved. Use the new conversation rather than repeatedly retrying the failed one; exact old-conversation causality remains unverified.
+
+A separate live compatibility gap was observed: both forced function-call probes emitted `response.output_item.done` with a function call, but `response.completed.response.output` was an empty array. The current nonstream collector trusts the terminal snapshot only, so it cannot recover that observed item. The successful two-request diagnostic reconstructed its test history from completed output-item events **only inside the temporary probe**, not in production. This contradicts the mock-only assumption of populated terminal snapshots; real nonstream/Chat aggregation therefore needs follow-up coverage and implementation before claiming full live compatibility. This gap is not established as the cause of the reported native-streaming failure.
 
 ## Intent and baseline
 

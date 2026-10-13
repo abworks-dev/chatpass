@@ -61,24 +61,28 @@ def test_nonloopback_serve_fails_without_starting(monkeypatch, capsys):
     assert "loopback" in capsys.readouterr().err
 
 
-def test_serve_wires_real_credential_and_key_owners(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['compatible', 'strict'])
+def test_serve_wires_real_credential_and_key_owners(tmp_path, monkeypatch, mode):
     from chatpass.credentials import Credentials
     store = StateStore(tmp_path, backend=MemoryKeyring())
     store.rotate_gateway_key()
     monkeypatch.setattr('chatpass.cli.StateStore', lambda _: store)
     seen = []
     def build(settings, credentials, key_verifier):
+        assert settings.compatibility_mode == mode
         assert isinstance(credentials, Credentials)
         assert key_verifier.__self__ is store
         assert key_verifier.__name__ == 'verify_gateway_key'
         return 'app'
     monkeypatch.setattr('chatpass.gateway.create_app', build)
     monkeypatch.setattr('uvicorn.run', lambda app, **kwargs: seen.append(app))
-    assert main(['--data-dir', str(tmp_path), 'serve']) == 0
+    options = ['--compatibility-mode', mode] if mode == 'strict' else []
+    assert main(['--data-dir', str(tmp_path), 'serve', *options]) == 0
     assert seen == ['app']
 
 
-def test_web_starts_without_existing_key_and_no_browser(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('mode', ['compatible', 'strict'])
+def test_web_starts_without_existing_key_and_no_browser(tmp_path, monkeypatch, capsys, mode):
     import sys
     from types import SimpleNamespace
 
@@ -89,6 +93,7 @@ def test_web_starts_without_existing_key_and_no_browser(tmp_path, monkeypatch, c
     seen = []
 
     def build(settings, owner, credentials):
+        assert settings.compatibility_mode == mode
         assert owner is store and isinstance(credentials, Credentials)
         assert not store.path.exists()
         return SimpleNamespace(state=SimpleNamespace(console_bootstrap_token="test-bootstrap"))
@@ -105,7 +110,8 @@ def test_web_starts_without_existing_key_and_no_browser(tmp_path, monkeypatch, c
     monkeypatch.setitem(sys.modules, "chatpass.console", SimpleNamespace(create_console_app=build))
     monkeypatch.setattr("uvicorn.Server", Server)
     monkeypatch.setattr("webbrowser.open", lambda *_: pytest.fail("must not open browser"))
-    assert main(["--data-dir", str(tmp_path), "web", "--no-browser", "--port", "19841"]) == 0
+    options = ['--compatibility-mode', mode] if mode == 'strict' else []
+    assert main(["--data-dir", str(tmp_path), "web", "--no-browser", "--port", "19841", *options]) == 0
     assert seen == ["run"]
     assert "http://127.0.0.1:19841/#token=test-bootstrap" in capsys.readouterr().out
     assert not store.path.exists()

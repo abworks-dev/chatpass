@@ -1,7 +1,8 @@
 """Authenticated, bounded gateway for the verified direct-sharing HTTP preview.
 
-Inference is streaming-only. Multi-turn state is explicit input history, not a
-server-side previous_response_id. Credential lifecycle belongs to the caller.
+The upstream stays streaming-only; client protocols are normalized at the edge.
+Multi-turn state is explicit history, never a server-side previous_response_id.
+Credential lifecycle belongs to the caller.
 """
 
 from __future__ import annotations
@@ -20,16 +21,13 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from .adapters import AdapterError, normalize_chat, normalize_responses
+from .bridges import BridgeError, chat_completion, chat_stream, collect_response
+
 UPSTREAM_BASE_URL = "https://api.openai.com/v1"
 MAX_SSE_FRAME_BYTES = 1048576
 MAX_STREAM_BYTES = 64 * 1048576
 MAX_RETRY_AFTER_SECONDS = 86400
-_UNSUPPORTED_FIELDS = frozenset({
-    "previous_response_id", "background", "conversation", "max_output_tokens",
-    "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt",
-    "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs",
-    "top_p", "truncation", "user",
-})
 _FRAME_END = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
 _ERROR_TERMINALS = frozenset({"response.failed", "response.incomplete", "error"})
 
@@ -72,8 +70,18 @@ def _upstream_error(status: int) -> _GatewayError:
                          error_type="upstream_error")
 
 
-def _invalid_upstream() -> _GatewayError:
-    return _GatewayError(502, "invalid_upstream_response", "Upstream returned an invalid response.",
+def _invalid_upstream(*, header: str | None = None, value: str = "") -> _GatewayError:
+    message = "Upstream returned an invalid response."
+    if header == "content-encoding":
+        # Fixed labels only: arbitrary upstream header/body values may contain secrets.
+        label = value if value in {"gzip", "br", "deflate", "zstd"} else "other"
+        message = f"Upstream returned unsupported content encoding ({label}); expected identity."
+    elif header == "content-type":
+        label = value if value in {"application/json", "text/html", "text/plain"} else (
+            "missing" if not value else "other"
+        )
+        message = f"Upstream returned unexpected content type ({label}); expected text/event-stream."
+    return _GatewayError(502, "invalid_upstream_response", message,
                          error_type="upstream_error")
 
 
@@ -104,49 +112,20 @@ def _load_json(data: bytes) -> Any:
                       parse_float=_finite_float)
 
 
-def _unsupported(param: str) -> _GatewayError:
-    # param is always a fixed gateway field name, never arbitrary client text.
-    return _GatewayError(400, "unsupported_capability",
-                         "This capability is not supported by the upstream HTTP preview.",
-                         param=param)
+def _bridge_error(error: BridgeError) -> _GatewayError:
+    return _GatewayError(504 if error.code == "upstream_timeout" else 502,
+                         error.code, error.message, error_type="upstream_error")
 
 
-def _validate_payload(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise _GatewayError(400, "invalid_json", "Request JSON must be an object.")
-    for field in sorted(_UNSUPPORTED_FIELDS):
-        if field in payload:
-            raise _unsupported(field)
-    model = payload.get("model")
-    if not isinstance(model, str) or not model.strip():
-        raise _GatewayError(400, "invalid_model", "A nonempty model string is required.", param="model")
-    if "input" not in payload or not isinstance(payload["input"], (str, list)):
-        raise _GatewayError(400, "invalid_input", "Input must be a string or input-history array.",
-                             param="input")
-    stream = payload.get("stream", True)
-    if not isinstance(stream, bool):
-        raise _GatewayError(400, "invalid_stream", "Stream must be a boolean.", param="stream")
-    if not stream:
-        raise _unsupported("stream")
-    result = dict(payload)
-    if isinstance(result["input"], str):
-        result["input"] = [{"role": "user", "content": result["input"]}]
-    else:
-        for item in result["input"]:
-            if not isinstance(item, dict):
-                raise _GatewayError(400, "invalid_input", "Input-history items must be objects.",
-                                     param="input")
-            if item.get("role") == "system":
-                raise _unsupported("input")
-    if "tools" in result:
-        if not isinstance(result["tools"], list):
-            raise _GatewayError(400, "invalid_tools", "Tools must be an array.", param="tools")
-        for tool in result["tools"]:
-            if not isinstance(tool, dict) or tool.get("type") not in ("function", "custom"):
-                raise _unsupported("tools")
-    result["store"] = False
-    result["stream"] = True
-    return result
+async def _chat_stream_response(frames: AsyncIterator[bytes], *, model: str,
+                                include_usage: bool) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in chat_stream(frames, model=model, include_usage=include_usage):
+            yield chunk
+    except BridgeError as error:
+        yield _bridge_error(error).sse()  # No [DONE] or success finish on failure.
+    finally:
+        await frames.aclose()
 
 
 def _model_catalog(payload: Any) -> dict[str, Any]:
@@ -250,7 +229,7 @@ class _SSEFrames:
             self._scan_from = max(0, len(self.buffer) - 3)
 
 
-def _event_kind(frame: bytes) -> str | None:
+def _event_kind(frame: bytes, *, require_response_envelope: bool = False) -> str | None:
     try:
         text = frame.decode("utf-8")
         event, data = None, []
@@ -275,6 +254,21 @@ def _event_kind(frame: bytes) -> str | None:
         if event and kind and event != kind:
             raise ValueError("Contradictory SSE event and JSON type")
         nested = payload.get("response")
+        if require_response_envelope:
+            # A missing media type requires positive protocol evidence, not a
+            # response.* prefix or an event-only name with arbitrary JSON.
+            valid_statuses = {
+                "response.created": {"queued", "in_progress"},
+                "response.in_progress": {"in_progress"},
+                "response.completed": {"completed"},
+            }
+            if (kind not in valid_statuses or not isinstance(nested, dict) or
+                    nested.get("object") != "response" or
+                    not isinstance(nested.get("id"), str) or not nested["id"].strip() or
+                    not isinstance(nested.get("status"), str) or
+                    nested["status"] not in valid_statuses[kind] or
+                    not isinstance(nested.get("output"), list)):
+                raise ValueError("Missing Responses SSE envelope")
         if (payload.get("error") is not None or
                 isinstance(nested, dict) and nested.get("error") is not None):
             return "error"
@@ -291,12 +285,53 @@ def _event_kind(frame: bytes) -> str | None:
         raise _stream_error("invalid_upstream_stream") from None
 
 
-async def _stream_response(response: httpx.Response, deadline: float) -> AsyncIterator[bytes]:
+async def _probe_headerless_stream(response: httpx.Response) -> AsyncIterator[bytes]:
+    """Require a bounded Responses SSE prelude before trusting absent media metadata."""
+    chunks = response.aiter_bytes()
+    frames = _SSEFrames()
+    prefix: list[bytes] = []
+    size = 0
+    try:
+        async for chunk in chunks:
+            size += len(chunk)
+            if size > MAX_SSE_FRAME_BYTES:
+                raise _invalid_upstream(header="content-type", value="")
+            prefix.append(chunk)
+            async for frame in frames.feed(chunk):
+                kind = _event_kind(frame, require_response_envelope=True)
+                if kind is None:
+                    continue  # Comments alone never establish a Responses stream.
+                if not kind.startswith("response."):
+                    raise _invalid_upstream(header="content-type", value="")
+                return _replay_chunks(prefix, chunks)
+        # EOF can resolve a trailing CR, but cannot establish success by itself.
+        async for frame in frames.feed(b"", final=True):
+            kind = _event_kind(frame, require_response_envelope=True)
+            if kind is not None and kind.startswith("response."):
+                return _replay_chunks(prefix, chunks)
+        raise _invalid_upstream(header="content-type", value="")
+    except BaseException:
+        await chunks.aclose()
+        raise
+
+
+async def _replay_chunks(prefix: list[bytes], chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    try:
+        for chunk in prefix:
+            yield chunk
+        async for chunk in chunks:
+            yield chunk
+    finally:
+        await chunks.aclose()
+
+
+async def _stream_response(response: httpx.Response, deadline: float,
+                           chunks: AsyncIterator[bytes] | None = None) -> AsyncIterator[bytes]:
     frames = _SSEFrames()
 
     async def read_frames() -> AsyncIterator[bytes]:
         total = 0
-        async for chunk in response.aiter_bytes():
+        async for chunk in chunks if chunks is not None else response.aiter_bytes():
             total += len(chunk)
             if total > MAX_STREAM_BYTES:
                 raise _stream_error("stream_limit_exceeded")
@@ -322,6 +357,9 @@ async def _stream_response(response: httpx.Response, deadline: float) -> AsyncIt
         yield error.sse()
     except httpx.HTTPError:
         yield _stream_error().sse()
+    finally:
+        if chunks is not None:
+            await chunks.aclose()
 
 
 class _ClosingStreamingResponse(StreamingResponse):
@@ -374,8 +412,9 @@ async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClien
                 if response.status_code == 429:
                     error.headers = _retry_after(response)
                 raise error
-            if response.headers.get("content-encoding", "identity").lower() != "identity":
-                raise _invalid_upstream()
+            encoding = response.headers.get("content-encoding", "identity").lower()
+            if encoding != "identity":
+                raise _invalid_upstream(header="content-encoding", value=encoding)
             try:
                 return _model_catalog(_load_json(await _read_upstream(response, body_limit)))
             except (ValueError, UnicodeError, RecursionError):
@@ -403,6 +442,9 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
     if (type(settings.max_body_bytes) is not int or settings.max_body_bytes <= 0
             or type(settings.max_concurrency) is not int or settings.max_concurrency <= 0):
         raise ValueError("Request size and concurrency limits must be positive integers")
+    compatibility_mode = getattr(settings, "compatibility_mode", "compatible")
+    if compatibility_mode not in ("compatible", "strict"):
+        raise ValueError("Compatibility mode must be compatible or strict")
     timeout = float(settings.timeout_seconds)
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Timeout must be positive and finite")
@@ -495,7 +537,8 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
             raise _GatewayError(401, "invalid_api_key", "A valid gateway Bearer key is required.",
                                  error_type="authentication_error")
 
-    async def proxy(request: Request, *, models: bool) -> JSONResponse | StreamingResponse:
+    async def proxy(request: Request, *, models: bool,
+                    chat: bool = False) -> JSONResponse | StreamingResponse:
         nonlocal active
         response = None
         handed_off = False
@@ -535,7 +578,9 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                         raise _GatewayError(415, "unsupported_media_type", "Content-Type must be application/json.")
                     raw = await _read_body(request, body_limit)
                     try:
-                        payload = _validate_payload(_load_json(raw))
+                        normalize = normalize_chat if chat else normalize_responses
+                        adapted = normalize(_load_json(raw), strict=compatibility_mode == "strict")
+                        payload = adapted.payload
                     except (ValueError, UnicodeError, RecursionError):
                         raise _GatewayError(400, "invalid_json", "Request body is not valid JSON.") from None
                 async def open_response() -> None:
@@ -575,16 +620,41 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                     # Read zero error-body bytes: token-echoing bodies are never needed.
                     return _upstream_error(response.status_code).response(
                         _retry_after(response) if response.status_code == 429 else None)
-                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                encoding = response.headers.get("content-encoding", "identity").lower()
+                if encoding != "identity":
                     # The request expressly requires identity encoding. Reject a
                     # compressed response before decoding any possible zip bomb.
-                    raise _invalid_upstream()
-                media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                if media_type != "text/event-stream":
-                    raise _invalid_upstream()
-                result = _ClosingStreamingResponse(_stream_response(response, deadline), close)
+                    raise _invalid_upstream(header="content-encoding", value=encoding)
+                content_type = response.headers.get("content-type")
+                media_type = (content_type or "").split(";", 1)[0].strip().lower()
+                if content_type is not None and media_type != "text/event-stream":
+                    raise _invalid_upstream(header="content-type", value=media_type)
+                chunks = None
+                if content_type is None:
+                    chunks = await _until_disconnect(request, _probe_headerless_stream(response))
+                frames = _stream_response(response, deadline, chunks)
+                headers = {"X-ChatPass-Compatibility": compatibility_mode}
+                if adapted.ignored_fields:
+                    headers["X-ChatPass-Ignored-Fields"] = ",".join(adapted.ignored_fields)
+                if not adapted.stream:
+                    async def collect() -> dict[str, Any]:
+                        try:
+                            return await collect_response(frames)
+                        finally:
+                            await frames.aclose()
+                    completed = await _until_disconnect(request, collect())
+                    result_body = chat_completion(completed, model=payload["model"]) if chat else completed
+                    return JSONResponse(result_body, headers=headers)
+                stream = (_chat_stream_response(frames, model=payload["model"],
+                                                include_usage=adapted.include_usage) if chat else frames)
+                result = _ClosingStreamingResponse(stream, close)
+                result.headers.update(headers)
                 handed_off = True
                 return result
+        except AdapterError as error:
+            return _GatewayError(400, error.code, error.message, param=error.param).response()
+        except BridgeError as error:
+            return _bridge_error(error).response()
         except _GatewayError as error:
             return error.response({"WWW-Authenticate": "Bearer"} if error.status == 401 else None)
         except (TimeoutError, httpx.TimeoutException):
@@ -603,6 +673,10 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
     @app.post("/v1/responses", response_model=None)
     async def responses(request: Request) -> JSONResponse | StreamingResponse:
         return await proxy(request, models=False)
+
+    @app.post("/v1/chat/completions", response_model=None)
+    async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
+        return await proxy(request, models=False, chat=True)
 
     @app.get("/v1/models", response_model=None)
     async def models(request: Request) -> JSONResponse | StreamingResponse:

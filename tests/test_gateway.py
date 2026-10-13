@@ -753,9 +753,10 @@ UNSUPPORTED_FIELDS = ["previous_response_id", "background", "conversation", "max
 
 
 @pytest.mark.parametrize("field", UNSUPPORTED_FIELDS)
-async def test_preview_unsupported_fields_are_explicitly_rejected(field):
+async def test_preview_unsupported_fields_are_explicitly_rejected_in_strict_mode(field):
     calls = []
-    app, upstream = make_app(lambda request: calls.append(request))
+    app, upstream = make_app(lambda request: calls.append(request),
+                             config=settings(compatibility_mode="strict"))
     async with upstream, downstream(app) as client:
         response = await client.post("/v1/responses", json=PAYLOAD | {field: "value"}, headers=AUTH)
     assert response.status_code == 400
@@ -765,11 +766,10 @@ async def test_preview_unsupported_fields_are_explicitly_rejected(field):
 
 
 @pytest.mark.parametrize("override", [
-    {"stream": False}, {"input": [{"role": "system", "content": "hidden"}]},
     {"tools": [{"type": "web_search_preview"}]}, {"tools": [{"type": "file_search"}]},
     {"tools": [{"type": "code_interpreter"}]}, {"tools": [{"type": "unknown"}]},
 ])
-async def test_unsupported_stream_system_role_and_hosted_tools_are_rejected(override):
+async def test_unsupported_hosted_tools_are_rejected(override):
     calls = []
     app, upstream = make_app(lambda request: calls.append(request))
     async with upstream, downstream(app) as client:
@@ -933,3 +933,26 @@ async def test_absolute_stream_timeout_closes_slow_stream():
 def test_unsafe_configuration_is_rejected(overrides):
     with pytest.raises(ValueError):
         factory()(settings(**overrides), Credentials(), lambda key: True)
+
+
+@pytest.mark.parametrize("header,value,label", [
+    ("content-encoding", "gzip", "content encoding (gzip)"),
+    ("content-encoding", "br", "content encoding (br)"),
+    ("content-encoding", "upstream-secret", "content encoding (other)"),
+    ("content-type", "application/json", "content type (application/json)"),
+    ("content-type", "text/html; charset=utf-8", "content type (text/html)"),
+    ("content-type", "text/upstream-secret", "content type (other)"),
+    ("content-type", "", "content type (missing)"),
+])
+async def test_invalid_upstream_headers_have_safe_specific_diagnostics(header, value, label):
+    stream = TrackedStream([b"upstream-secret"])
+    headers = {"content-type": "text/event-stream"}
+    headers[header] = value
+    app, upstream = make_app(lambda request: httpx.Response(200, stream=stream, headers=headers))
+    async with upstream, downstream(app) as client:
+        response = await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "invalid_upstream_response"
+    assert label in response.json()["error"]["message"]
+    assert "upstream-secret" not in response.text
+    assert stream.closed and not stream.started.is_set()

@@ -47,10 +47,14 @@ def main(argv=None) -> int:
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=19840)
     web.add_argument("--no-browser", action="store_true")
+    for command in (serve, web):
+        command.add_argument("--compatibility-mode", choices=("compatible", "strict"),
+                             default="compatible", help="Filter unsupported tuning fields or reject them")
     args = parser.parse_args(argv)
     try:
         if args.command in ("serve", "web"):
-            settings = Settings(data_dir=args.data_dir, host=args.host, port=args.port)
+            settings = Settings(data_dir=args.data_dir, host=args.host, port=args.port,
+                                compatibility_mode=args.compatibility_mode)
         store = StateStore(args.data_dir)
         if args.command == "key":
             issue = store.initialize_gateway_key if args.action == "init" else store.rotate_gateway_key
