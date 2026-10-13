@@ -425,7 +425,12 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
 
     @app.get("/assets/{name:path}")
     async def asset(name: str) -> FileResponse:
-        if name not in {"console.js", "console.css", "vendor/tabler.min.css", "vendor/LICENSE.tabler"}:
+        if name not in {
+            "console.js", "console.css", "brand/branding.css",
+            "brand/chatpass-icon.svg", "brand/chatpass-mark.svg",
+            "brand/chatpass-icon-512.png", "brand/chatpass-icon-32.png", "brand/chatpass.ico",
+            "vendor/tabler.min.css", "vendor/LICENSE.tabler",
+        }:
             raise _error(404, "not_found")
         return FileResponse(static / name)
 

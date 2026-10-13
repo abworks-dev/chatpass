@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/chatpass/static/brand/chatpass-icon.svg" width="96" height="96" alt="ChatPass conversation ticket icon">
+</p>
+
 # ChatPass
 
 [简体中文](README.md) | **English**

@@ -7,16 +7,18 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light">
   <title>ChatPass · 本地控制台</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="/assets/brand/chatpass.ico" sizes="any">
+  <link rel="icon" href="/assets/brand/chatpass-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/vendor/tabler.min.css">
   <link rel="stylesheet" href="/assets/console.css">
+  <link rel="stylesheet" href="/assets/brand/branding.css">
   <script src="/assets/console.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳转到主要内容</a>
   <div class="console-layout">
     <aside class="sidebar" aria-label="控制台导航">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>↗</span></span><div><span class="brand-name">ChatPass</span><span class="brand-caption">LOCAL CONSOLE</span></div></div>
+      <div class="brand"><img class="brand-icon" src="/assets/brand/chatpass-icon.svg" width="42" height="42" alt="" aria-hidden="true"><div><span class="brand-name">ChatPass</span><span class="brand-caption">LOCAL CONSOLE</span></div></div>
       <button id="menu-toggle" class="menu-toggle" type="button" aria-controls="sidebar-navigation" aria-expanded="false" aria-label="展开导航"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
       <div id="sidebar-navigation" class="sidebar-navigation">
         <div class="nav-caption">工作空间</div>

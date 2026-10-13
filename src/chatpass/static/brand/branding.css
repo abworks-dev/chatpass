@@ -1,0 +1,3 @@
+/* ChatPass conversation-ticket branding, scoped to the sidebar icon. */
+.brand-icon{display:block;width:42px;height:42px;flex-shrink:0;border-radius:10px}
+@media(max-width:850px){.brand-icon{width:35px;height:35px;border-radius:8px}}
