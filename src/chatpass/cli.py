@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
+import webbrowser
+from ipaddress import ip_address
 from pathlib import Path
 
 from .config import Settings, default_data_dir
@@ -13,6 +16,19 @@ from .credentials import Credentials
 from .login import login
 from .oauth import OAuthError
 from .storage import StateStore, StorageError
+
+
+def _open_console_when_ready(server, url: str) -> None:
+    """Open only after our own server listens, not after a port belonging to another app."""
+    deadline = time.monotonic() + 15
+    waiter = threading.Event()
+    while not server.started and not server.should_exit and time.monotonic() < deadline:
+        waiter.wait(0.05)
+    if server.started and not server.should_exit:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass  # The explicit terminal URL remains the recovery path.
 
 
 def main(argv=None) -> int:
@@ -27,9 +43,13 @@ def main(argv=None) -> int:
     serve = commands.add_parser("serve", help="Serve the loopback Responses gateway")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=19840)
+    web = commands.add_parser("web", help="Run the local management console and gateway")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=19840)
+    web.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if args.command == "serve":
+        if args.command in ("serve", "web"):
             settings = Settings(data_dir=args.data_dir, host=args.host, port=args.port)
         store = StateStore(args.data_dir)
         if args.command == "key":
@@ -40,27 +60,31 @@ def main(argv=None) -> int:
             print("Authorization saved securely.")
         elif args.command == "status":
             state = store.read() if store.path.exists() else {}
-            credentials = state.get("credentials", {})
-            print(
-                json.dumps(
-                    {
-                        "gateway_key_configured": bool(state.get("gateway_key_hash")),
-                        "account_authorized": bool(credentials)
-                        and not state.get("login_required", False)
-                        and not state.get("refresh_in_progress", False),
-                        "access_token_expired": bool(credentials)
-                        and credentials.get("expires_at", 0) <= time.time(),
-                        "pending_token_validation": "pending_tokens" in state,
-                        "login_required": bool(
-                            state.get("login_required") or state.get("refresh_in_progress")
-                        ),
-                        "registration_configured": bool(
-                            state.get("registration", {}).get("client_id")
-                        ),
-                    },
-                    indent=2,
-                )
-            )
+            from .console import credential_status
+
+            print(json.dumps(credential_status(state), indent=2))
+        elif args.command == "web":
+            import uvicorn
+
+            from .console import create_console_app
+
+            credentials = Credentials(store)
+            try:
+                app = create_console_app(settings, store, credentials)
+                address = ip_address(settings.host)
+                host = f"[{address}]" if address.version == 6 else str(address)
+                url = f"http://{host}:{settings.port}/#token={app.state.console_bootstrap_token}"
+                print("Local management link (private, single use, expires in five minutes):")
+                print(url)
+                server = uvicorn.Server(uvicorn.Config(
+                    app, host=settings.host, port=settings.port,
+                    access_log=False, log_level="warning"))
+                if not args.no_browser:
+                    threading.Thread(target=_open_console_when_ready,
+                                     args=(server, url), daemon=True).start()
+                server.run()
+            finally:
+                credentials.oauth.close()
         else:
             if not store.path.exists() or not store.read().get("gateway_key_hash"):
                 raise StorageError("Run chatpass key init before starting the gateway.")

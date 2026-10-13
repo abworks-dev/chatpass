@@ -1,15 +1,17 @@
 # 验证范围与证据
 
-**验证日期：2026-10-13。** 初始 Windows 实现；验收依据为 [设计](design.md) 与 [实施计划](implementation-plan.md)。本文件区分代码行为证据和真实服务验收，不把模拟结果写成账号或客户端成功。
+**验证日期：2026-10-13。** Windows 本地网关与 Web 管理台；范围依据为 [设计](design.md)、[初始实施计划](implementation-plan.md) 与 [管理台计划](web-console-plan.md)。本文件区分代码行为证据和真实服务验收，不把模拟结果写成账号或客户端成功。
 
 ## 最后一次验证结果
 
-- Windows / Python 3.11.9，全量普通测试：**180 passed, 1 skipped**，12.89 秒；跳过项是显式可选的原生 keyring 测试。
-- 原生 Windows keyring 测试单独显式执行：**1 passed**，0.36 秒。
-- Ruff：**All checks passed**；锁文件检查成功，43 个锁定包。
-- wheel 与 sdist 构建成功；最终 wheel 在独立非编辑虚拟环境重新安装，导入版本 `0.1.0`，CLI 总帮助及 serve 帮助均返回成功。
-- 检查分发包未包含运行状态、凭据文件、开发虚拟环境或 Python 缓存；没有发布 PyPI 包或自动执行真实登录。
-- 两个只读独立审查范围均无剩余具体 Critical/Important 问题；网关原有 Minor 换行问题也已复测关闭。审查者独立范围分别为 42 项授权/存储/CLI 测试与 138 项网关/真实本地 HTTP 测试。结论是咨询性代码审查，不是生产发布或真实服务验收。
+- Windows / Python 3.11.9，最终全量普通测试：**258 passed, 2 skipped**，17.67 秒；跳过项是显式可选的原生 keyring 与真实浏览器测试。
+- 原生 Windows keyring 测试单独显式执行：**1 passed**，0.40 秒；仅使用随机隔离测试服务。
+- 真实 headless Microsoft Edge 的持久回归测试：**1 passed**，3.51 秒；另有隔离浏览器冒烟 **27 项检查通过**，生成 1440×1050 桌面和 390 像素宽手机截图。上游、授权结果及 keyring 均为测试替身，没有真实账号或订阅调用。
+- Ruff：**All checks passed**；JavaScript `node --check` 成功；锁文件检查成功，46 个锁定包。
+- wheel 与 sdist 重新构建成功；最终 wheel 在独立非编辑虚拟环境重新安装，导入版本 `0.1.0`，CLI 总帮助、`web` 和 `serve` 帮助均返回成功。
+- 两个分发包的五项静态资源逐字节与源码匹配，Tabler CSS SHA-256 与第三方声明一致；完整 MIT 文本存在。非编辑安装后的控制台和静态 HTTP 路由成功，不读取系统凭据、不发送上游请求。
+- 分发包未包含运行状态、凭据文件、开发虚拟环境或 Python 缓存；没有发布 PyPI 包、创建发布标签或自动执行真实登录。
+- 两个新增只读独立审查范围无剩余具体 Critical/Important 问题。后端审查独立执行 **221 项测试**及四种 worker/client 生命周期探针；前端审查独立验证轮询截止、显式重启、规范错误恢复与许可一致性。结论是咨询性代码审查，不是生产发布或真实服务验收。
 
 ## 可以复现的自动验证
 
@@ -23,7 +25,17 @@ uv lock --check
 uv build
 ```
 
-普通测试使用临时状态、测试 keyring 和模拟官方 HTTP 响应。唯一真实 HTTP 冒烟测试启动临时回环 uvicorn 监听，使用真实 httpx 客户端访问，但其官方上游仍为 MockTransport；不执行真实账号授权或消耗订阅额度。
+普通测试使用临时状态、测试 keyring 和模拟官方 HTTP 响应。本地 HTTP 冒烟及可选浏览器测试启动临时回环 uvicorn 监听，使用真实 HTTP 客户端或 Edge，但官方上游仍为 MockTransport；不执行真实账号授权或消耗订阅额度。
+
+真实浏览器回归是显式可选项，使用已安装的 Edge，或开发者事先安装的 Playwright Chromium：
+
+```powershell
+$env:CHATPASS_BROWSER_TEST='1'
+uv run pytest tests/test_web_browser.py -q
+Remove-Item Env:CHATPASS_BROWSER_TEST
+```
+
+它验证桌面/手机布局、fragment 清除、管理 Cookie、无浏览器秘密存储、显式密钥轮换、恶意模型名文本渲染、待验证凭据恢复、210 秒轮询截止与主动刷新重启、过期会话锁屏，以及所有浏览器资源均为同源。
 
 原生系统存储测试是显式可选项：
 
@@ -39,17 +51,19 @@ Remove-Item Env:CHATPASS_NATIVE_KEYRING_TEST
 
 | 范围 | 证据 | 证明的行为 |
 | --- | --- | --- |
-| 配置 | `tests/test_config.py` | 回环默认值、参数限值、公网监听拒绝 |
-| 状态与密钥 | `tests/test_storage.py` | AES-GCM 密文、错误主密钥/损坏状态拒绝、事务回滚、密钥轮换、无明文降级 |
-| 真实 Windows keyring | `tests/test_native_storage.py` | 显式可选、独立临时服务的读写和清理 |
-| 官方授权协议处理 | `tests/test_oauth.py` | PKCE、动态注册、回调参数、签名/issuer/audience/nonce/subject/scope、受限发现地址；HTTP 与 JWT 为测试数据 |
-| 回调监听 | `tests/test_login.py` | 真实回环请求、Host/path/state、单次回调、空闲与慢速请求的绝对截止时间 |
-| 凭据生命周期 | `tests/test_credentials.py` | 单次刷新、轮换检查点、验证失败保留待验证替代令牌、不重放不确定刷新 |
-| 跨进程 | `tests/test_multiprocess.py` | spawn 进程并发更新不丢失、刷新仅发送一次、仅一次 key init 成功且成功密钥保持有效；上游/主密钥仍是测试替身 |
-| 网关 | `tests/test_gateway.py` | 先鉴权再读正文/凭据、请求与并发限制、禁止字段、模型目录转换、工具历史与 SSE、错误净化、取消/断连资源释放 |
-| CLI | `tests/test_cli.py` | 不泄漏凭据、显式密钥操作、初始化竞争、模块导入无副作用、网关真实所有者接线 |
-| 本地 HTTP | `tests/test_http_smoke.py` | 真正监听器上的 health/401/models/SSE 与立即轮换；官方上游为模拟响应 |
-| 分发安装 | wheel/sdist 构建与独立干净虚拟环境安装 | 非编辑安装后可导入 0.1.0 并运行 CLI help；不是 PyPI 已发布证据 |
+| 配置 | [配置测试](../tests/test_config.py) | 回环默认值、参数限值、公网监听拒绝 |
+| 状态与密钥 | [存储测试](../tests/test_storage.py) | AES-GCM 密文、错误主密钥/损坏状态拒绝、事务回滚、密钥轮换、无明文降级 |
+| 真实 Windows keyring | [原生存储测试](../tests/test_native_storage.py) | 显式可选、独立临时服务的读写和清理 |
+| 官方授权协议处理 | [OAuth 测试](../tests/test_oauth.py) | PKCE、动态注册、回调参数、签名/issuer/audience/nonce/subject/scope、受限发现地址；HTTP 与 JWT 为测试数据 |
+| 回调监听 | [登录测试](../tests/test_login.py) | 真实回环请求、Host/path/state、单次回调、空闲与慢速请求的绝对截止时间 |
+| 凭据生命周期 | [凭据测试](../tests/test_credentials.py) | 单次刷新、轮换检查点、验证失败保留待验证替代令牌、不重放不确定刷新 |
+| 跨进程 | [并发测试](../tests/test_multiprocess.py) | spawn 进程并发更新不丢失、刷新仅发送一次、仅一次 key init 成功且成功密钥保持有效；上游/主密钥仍是测试替身 |
+| 网关 | [网关测试](../tests/test_gateway.py) | 先鉴权再读正文/凭据、请求与并发限制、禁止字段、模型目录转换、工具历史与 SSE、错误净化、取消/断连资源释放 |
+| CLI | [CLI 测试](../tests/test_cli.py) | 不泄漏凭据、显式密钥操作、初始化竞争、模块导入无副作用、网关真实所有者接线 |
+| 本地 HTTP | [HTTP 冒烟](../tests/test_http_smoke.py) | 真正监听器上的 health/401/models/SSE 与立即轮换；官方上游为模拟响应 |
+| 管理接口 | [管理台测试](../tests/test_console.py) | 单次入口、过期会话、重复参数、Host/Origin/CSRF、正文限额、显式操作、错误净化、生命周期与并发容量 |
+| 真实浏览器 | [浏览器测试](../tests/test_web_browser.py) | 实际 Edge 桌面/手机 DOM 与网络；模拟上游和隔离存储，不是账号验证 |
+| 分发安装 | wheel/sdist 构建与独立干净虚拟环境安装 | 非编辑安装后 CLI 及静态路由可用，资源/许可逐字节一致，无状态与凭据文件；不是 PyPI 已发布证据 |
 
 ## 独立审查与针对性修复
 
@@ -64,13 +78,21 @@ Remove-Item Env:CHATPASS_NATIVE_KEYRING_TEST
 
 上述修复均为 `Decision: code-change`：仅改文档/配置不能修复复现行为。所有者边界保持不变，不新增付费/明文/凭据导入降级。没有旧实现、迁移或遗留适配器需要删除。
 
+### Web 管理台后续审查
+
+- 管理 GET 与写操作都执行实际会话截止校验；入口在有界正文读取后重新检查截止并原子消耗，拒绝重复 Host/Origin/Cookie/JSON 字段与不可编码 Unicode。
+- 管理存储/登录/模型查询，以及公开接口凭据/鉴权任务，在 HTTP 超时或取消后继续持有其有界容量；关闭时先阻止新任务并等待真实 worker 完成，再关闭自有 HTTP 客户端。外部注入的客户端仍由调用者负责。
+- 前端错误映射改为后端实际代码，临时签名验证不可用时明确提示等待验证、不要重复授权。轮询只有一个调度所有者，210 秒预算结束后不再复活定时器；主动刷新可以显式重新开始。
+- 原有 30 毫秒 SSE 测试在负载下可能在响应头前合法超时，不能稳定证明“正在流式传输时截断”。仅将该测试预算设为 0.5 秒、外层等待设为 2 秒；未释放的流 gate 仍保证发生超时，并保留 200、净化错误、无伪完成和关闭流的断言。生产超时语义未改；流截止从鉴权完成后开始，鉴权另有独立超时。
+- 浏览器 fake-clock 回归等待实际刷新响应完成，再推进下一次轮询；过期会话通过重新加载稳定触发 GET 校验，避免测试点击已被轮询锁屏隐藏的按钮。这是测试竞态修正，不是界面绕过。
+
 ## 仍未验证与已知边界
 
 - **真实官方登录/推理/刷新、账号资格与额度扣减：未验证。** 测试签名及响应不能证明这些能力。
 - **Hermes/OpenClaw/DeepSeek Harness 的真实配置、流式、多轮和工具调用：未验证。** 按 [客户端验收](clients.md) 在具体版本上分别记录。
 - **远程/公网部署：不支持。** 本版拒绝非回环绑定，未完成 TLS、管理权限分离、用户配额与公网加固。
 - **macOS/Linux 原生 keyring：未实测。** 无可用受支持安全后端时拒绝保存，不降级为明文。
-- Python 无法安全终止已运行的同步 keyring 线程。若后端永久挂起，鉴权容量将保持占用；请求仍受超时约束，后续请求可返回 429。修复后端并重启，而不是不断提交替代任务。
+- Python 无法安全终止已运行的同步 keyring/浏览器线程。若后端永久挂起，有界容量将保持占用，关闭等待也可能延长；HTTP 请求仍受超时约束，后续请求可返回 429。修复后端并重启，而不是不断提交替代任务。
 - 项目许可证尚未选定，也未发布到 PyPI；不能把公开仓库称为已获得宽松开源授权。
 
 初始代码与本地模拟验证可以完成，真实服务及三客户端验收仍需用户主动登录与授权测试。任何报告都应保留这一分界。

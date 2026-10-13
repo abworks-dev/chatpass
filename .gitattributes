@@ -2,6 +2,12 @@
 *.md text eol=lf
 *.py text eol=lf
 *.toml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+src/chatpass/static/vendor/LICENSE.tabler text eol=lf
+# Preserve the original third-party asset bytes and published digest on checkout.
+src/chatpass/static/vendor/tabler.min.css -text
 uv.lock text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf

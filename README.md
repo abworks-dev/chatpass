@@ -19,7 +19,22 @@ A local-first Responses gateway. Clients receive a ChatPass access key; upstream
 
 Mock testing establishes implementation behavior, not upstream eligibility, official approval or client compatibility. See [verification](docs/verification.md).
 
-## Local quick start
+## Local Web console
+
+The Chinese-first local console adapts [Tabler](https://github.com/tabler/tabler), MIT, pinned to 1.6.1. Assets ship inside the Python package, without a CDN, remote fonts or telemetry. See [third-party notices](THIRD_PARTY_NOTICES.md).
+
+```powershell
+uv sync --locked
+uv run chatpass web
+```
+
+This starts the console and inference gateway together and opens a browser after the server is ready. Create a gateway key in the UI, explicitly start official browser authorization, discover available models and read client setup guidance. Existing CLI credentials and keys remain usable. Overview counters are process-local requests and uptime, **not official remaining quota**.
+
+The terminal management URL contains a private, single-use fragment capability valid for five minutes. Do not share it. The browser removes the fragment before any management request, then exchanges the capability for an independent HttpOnly management session; inference keys never confer management authority. Sessions expire after eight hours or a process restart. Restart `web` for a fresh entry link. Use `web --no-browser` to open the printed URL manually.
+
+Run **either** `web` or `serve`, not both on the same port. `web` supports first-time setup before a key exists; `serve` stays API-only. This is not a remotely accessible control panel. See [console security and verification](docs/web-console.md).
+
+## CLI-only quick start
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and a supported secure platform keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service/KWallet).
 
@@ -48,7 +63,7 @@ This is **not an OpenAI API key**; it works only through the running gateway. Ne
 
 The verified HTTP preview requires `stream:true` and `store:false`, full input history rather than `previous_response_id`, and explicit rejection of unsupported fields/hosted tools. String input becomes a user item; function/custom tools and their explicit results are preserved. `system` history items are unsupported; use supported `instructions`/`developer` semantics. Nonstream requests, `temperature`, `max_output_tokens` and other unsupported preview fields return a clear 400 instead of silently changing meaning.
 
-The gateway exposes only `GET /v1/models` and `POST /v1/responses` for inference. The model catalog is normalized from upstream `models/slug/visibility` to `data/id`. There is no public authorization management API.
+The gateway exposes only `GET /v1/models` and `POST /v1/responses` for inference. The model catalog is normalized from upstream `models/slug/visibility` to `data/id`. Optional local management endpoints run only in `web` mode and require a separate protected management session; they are not public authorization APIs.
 
 See [protocol evidence and licensing](docs/protocol-notes.md) and [client setup/verification](docs/clients.md). All three target clients remain **not tested** against a real account; clients that only support Chat Completions cannot use this initial release.
 

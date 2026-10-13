@@ -78,6 +78,45 @@ def test_serve_wires_real_credential_and_key_owners(tmp_path, monkeypatch):
     assert seen == ['app']
 
 
+def test_web_starts_without_existing_key_and_no_browser(tmp_path, monkeypatch, capsys):
+    import sys
+    from types import SimpleNamespace
+
+    from chatpass.credentials import Credentials
+
+    store = StateStore(tmp_path, backend=MemoryKeyring())
+    monkeypatch.setattr("chatpass.cli.StateStore", lambda _: store)
+    seen = []
+
+    def build(settings, owner, credentials):
+        assert owner is store and isinstance(credentials, Credentials)
+        assert not store.path.exists()
+        return SimpleNamespace(state=SimpleNamespace(console_bootstrap_token="test-bootstrap"))
+
+    class Server:
+        def __init__(self, config):
+            assert config.access_log is False and config.host == "127.0.0.1"
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            seen.append("run")
+
+    monkeypatch.setitem(sys.modules, "chatpass.console", SimpleNamespace(create_console_app=build))
+    monkeypatch.setattr("uvicorn.Server", Server)
+    monkeypatch.setattr("webbrowser.open", lambda *_: pytest.fail("must not open browser"))
+    assert main(["--data-dir", str(tmp_path), "web", "--no-browser", "--port", "19841"]) == 0
+    assert seen == ["run"]
+    assert "http://127.0.0.1:19841/#token=test-bootstrap" in capsys.readouterr().out
+    assert not store.path.exists()
+
+
+def test_nonloopback_web_fails_before_creating_state(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("chatpass.cli.StateStore", lambda _: pytest.fail("must not touch storage"))
+    assert main(["--data-dir", str(tmp_path), "web", "--host", "0.0.0.0"]) == 1
+    assert "loopback" in capsys.readouterr().err
+
+
 def test_import_does_not_open_browser_or_touch_state():
     import chatpass.cli
 

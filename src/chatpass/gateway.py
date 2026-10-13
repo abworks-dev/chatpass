@@ -49,10 +49,12 @@ class _GatewayError(Exception):
     def __init__(self, status: int, code: str, message: str, *, param: str | None = None,
                  error_type: str = "invalid_request_error") -> None:
         self.status = status
+        self.headers: dict[str, str] = {}
         self.error = {"message": message, "type": error_type, "param": param, "code": code}
 
     def response(self, headers: dict[str, str] | None = None) -> JSONResponse:
-        return JSONResponse({"error": self.error}, status_code=self.status, headers=headers)
+        return JSONResponse({"error": self.error}, status_code=self.status,
+                            headers=self.headers | (headers or {}))
 
     def sse(self) -> bytes:
         return b"event: error\ndata: " + json.dumps({"error": self.error}).encode() + b"\n\n"
@@ -341,6 +343,53 @@ class _ClosingStreamingResponse(StreamingResponse):
                     await self._close()
 
 
+async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClient | None,
+                              *, timeout: float, body_limit: int) -> dict[str, Any]:
+    """The single upstream model protocol owner, shared by API and local console."""
+    response = None
+    try:
+        async with asyncio.timeout(timeout):
+            try:
+                token = await credentials.get_access_token()
+                if not isinstance(token, str) or not token or re.search(r"\s", token):
+                    raise ValueError
+            except _GatewayError:
+                raise
+            except Exception:
+                raise _GatewayError(503, "credentials_unavailable",
+                                    "Upstream credentials are unavailable; sign in locally.",
+                                    error_type="authentication_error") from None
+            if client is None:
+                raise _GatewayError(503, "gateway_unavailable", "Gateway lifecycle is not running.",
+                                    error_type="server_error")
+            request = httpx.Request(
+                "GET", UPSTREAM_BASE_URL + "/models",
+                headers={"Authorization": f"Bearer {token}", "Accept-Encoding": "identity",
+                         "Accept": "application/json"},
+                extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+            )
+            response = await client.send(request, stream=True, auth=None, follow_redirects=False)
+            if response.status_code != 200:
+                error = _upstream_error(response.status_code)
+                if response.status_code == 429:
+                    error.headers = _retry_after(response)
+                raise error
+            if response.headers.get("content-encoding", "identity").lower() != "identity":
+                raise _invalid_upstream()
+            try:
+                return _model_catalog(_load_json(await _read_upstream(response, body_limit)))
+            except (ValueError, UnicodeError, RecursionError):
+                raise _invalid_upstream() from None
+    except (TimeoutError, httpx.TimeoutException):
+        raise _timeout_error() from None
+    except httpx.HTTPError:
+        raise _upstream_error(502) from None
+    finally:
+        if response is not None:
+            with anyio.CancelScope(shield=True):
+                await response.aclose()
+
+
 def create_app(settings: GatewaySettings, credentials: Credentials,
                key_verifier: Callable[[str], bool], *, client: httpx.AsyncClient | None = None
                ) -> FastAPI:
@@ -359,12 +408,48 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
         raise ValueError("Timeout must be positive and finite")
     body_limit, concurrency_limit = settings.max_body_bytes, settings.max_concurrency
     active = 0  # Modified without awaits, on the app event loop: no queued semaphore wait.
+    closing = False
     verifications: set[asyncio.Task[bool]] = set()
+    credential_tasks: set[asyncio.Task[str]] = set()
+
+    class AdmittedCredentials:
+        async def get_access_token(self) -> str:
+            if closing:
+                raise _GatewayError(503, "gateway_unavailable", "Gateway is shutting down.")
+            if len(credential_tasks) >= concurrency_limit:
+                raise _GatewayError(429, "gateway_busy", "Gateway concurrency limit reached.",
+                                    error_type="rate_limit_error")
+            task = asyncio.create_task(credentials.get_access_token())
+            credential_tasks.add(task)
+
+            def finished(done: asyncio.Task[str]) -> None:
+                credential_tasks.discard(done)
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(finished)
+            # A timed-out HTTP waiter cannot terminate its keyring/refresh thread.
+            return await asyncio.shield(task)
+
+    admitted_credentials = AdmittedCredentials()
+
+    async def drain_workers() -> None:
+        nonlocal closing
+        closing = True
+        # HTTP timeout/cancellation cannot stop OS-keyring or refresh threads.
+        # Join their real owners before callers may dispose OAuth resources.
+        with anyio.CancelScope(shield=True):
+            tasks = list(verifications) + list(credential_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if client is not None:
-            yield
+            try:
+                yield
+            finally:
+                await drain_workers()
         else:
             async with httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(timeout),
                                          trust_env=False) as owned:
@@ -372,12 +457,16 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                 try:
                     yield
                 finally:
+                    await drain_workers()
                     app.state.upstream_client = None
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.upstream_client = client
+    app.state.credential_tasks = credential_tasks
 
     async def authenticate(request: Request) -> None:
+        if closing:
+            raise _GatewayError(503, "gateway_unavailable", "Gateway is shutting down.")
         values = request.headers.getlist("authorization")
         match = re.fullmatch(r"Bearer ([^\s]+)", values[0], re.IGNORECASE) if len(values) == 1 else None
         valid = False
@@ -434,6 +523,11 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
             acquired = True
             deadline = asyncio.get_running_loop().time() + timeout
             async with asyncio.timeout_at(deadline):
+                if models:
+                    catalog = await _until_disconnect(request, fetch_model_catalog(
+                        admitted_credentials, app.state.upstream_client, timeout=timeout,
+                        body_limit=body_limit))
+                    return JSONResponse(catalog)
                 payload = None
                 if not models:
                     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -447,9 +541,11 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                 async def open_response() -> None:
                     nonlocal response
                     try:
-                        token = await credentials.get_access_token()
+                        token = await admitted_credentials.get_access_token()
                         if not isinstance(token, str) or not token or re.search(r"\s", token):
                             raise RuntimeError("Invalid credentials")
+                    except _GatewayError:
+                        raise
                     except Exception:
                         raise _GatewayError(503, "credentials_unavailable",
                                              "Upstream credentials are unavailable; sign in locally.",
@@ -460,14 +556,13 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                                              error_type="server_error")
                     # Fresh request: no injected client defaults or downstream headers.
                     headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity",
-                               "Accept": "application/json" if models else "text/event-stream"}
+                               "Accept": "text/event-stream"}
                     content = None
                     if payload is not None:
                         headers["Content-Type"] = "application/json"
                         content = json.dumps(payload, allow_nan=False).encode("utf-8")
                     upstream_request = httpx.Request(
-                        "GET" if models else "POST",
-                        UPSTREAM_BASE_URL + ("/models" if models else "/responses"),
+                        "POST", UPSTREAM_BASE_URL + "/responses",
                         headers=headers, content=content,
                         extensions={"timeout": httpx.Timeout(timeout).as_dict()},
                     )
@@ -484,13 +579,6 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                     # The request expressly requires identity encoding. Reject a
                     # compressed response before decoding any possible zip bomb.
                     raise _invalid_upstream()
-                if models:
-                    try:
-                        data = _load_json(await _until_disconnect(
-                            request, _read_upstream(response, body_limit)))
-                    except (ValueError, UnicodeError, RecursionError):
-                        raise _invalid_upstream() from None
-                    return JSONResponse(_model_catalog(data))
                 media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 if media_type != "text/event-stream":
                     raise _invalid_upstream()

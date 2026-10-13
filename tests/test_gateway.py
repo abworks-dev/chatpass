@@ -68,6 +68,82 @@ def downstream(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway")
 
 
+@pytest.mark.parametrize("path", ["/v1/models", "/v1/responses"])
+async def test_credential_worker_capacity_survives_http_timeout(path):
+    gate = threading.Event()
+    entered = threading.Event()
+    calls = []
+
+    class SlowCredentials:
+        async def get_access_token(self):
+            def work():
+                calls.append(1)
+                entered.set()
+                gate.wait(timeout=5)
+                return "upstream-secret"
+            return await asyncio.to_thread(work)
+
+    await asyncio.to_thread(lambda: None)  # Isolate credential lifetime from pool cold startup.
+    app, upstream = make_app(lambda _: pytest.fail("must not reach upstream"),
+                             config=settings(max_concurrency=1, timeout_seconds=0.1),
+                             credentials=SlowCredentials())
+    try:
+        async with upstream, downstream(app) as client:
+            request = client.get if path.endswith("models") else client.post
+            kwargs = {"headers": AUTH}
+            if path.endswith("responses"):
+                kwargs["json"] = PAYLOAD
+            first = await asyncio.wait_for(request(path, **kwargs), 1)
+            assert entered.is_set() and first.status_code == 504
+            second = await asyncio.wait_for(request(path, **kwargs), 1)
+            assert second.status_code == 429
+            assert second.json()["error"]["code"] == "gateway_busy"
+            assert calls == [1]
+    finally:
+        gate.set()
+        for _ in range(50):
+            if not getattr(app.state, "credential_tasks", set()):
+                break
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("worker", ["credentials", "verifier"])
+async def test_lifespan_waits_for_workers_after_http_timeout(worker):
+    gate, entered = threading.Event(), threading.Event()
+
+    def blocked(value):
+        entered.set()
+        gate.wait(timeout=5)
+        return value
+
+    class SlowCredentials:
+        async def get_access_token(self):
+            return await asyncio.to_thread(blocked, "upstream-secret")
+
+    await asyncio.to_thread(lambda: None)
+    app, upstream = make_app(lambda _: pytest.fail("must not reach upstream"),
+                             config=settings(timeout_seconds=0.1),
+                             credentials=SlowCredentials() if worker == "credentials" else Credentials(),
+                             verifier=(lambda _: blocked(True)) if worker == "verifier" else None)
+    lifecycle = app.router.lifespan_context(app)
+    await lifecycle.__aenter__()
+    closing = None
+    try:
+        async with downstream(app) as client:
+            response = await client.get("/v1/models", headers=AUTH)
+        assert entered.is_set() and response.status_code == (504 if worker == "credentials" else 401)
+        closing = asyncio.create_task(lifecycle.__aexit__(None, None, None))
+        await asyncio.sleep(0.02)
+        assert not closing.done(), "ASGI shutdown must retain actual credential/keyring worker ownership"
+    finally:
+        gate.set()
+        if closing is not None:
+            await closing
+        else:
+            await lifecycle.__aexit__(None, None, None)
+        await upstream.aclose()
+
+
 AUTH = {"Authorization": "Bearer gateway-secret"}
 PAYLOAD = {"model": "real-model", "input": "hello", "stream": True}
 COMPLETED = b'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
@@ -835,11 +911,14 @@ async def test_stream_bytes_are_bounded_and_upstream_closed(limit, monkeypatch):
 
 async def test_absolute_stream_timeout_closes_slow_stream():
     stream = TrackedStream([b": ping\n\n"], gate=asyncio.Event())
+    # The stream deadline starts after authentication and includes opening headers.
+    # A 30ms fixture can correctly time out before SSE starts on loaded Windows.
+    # Leave header/startup headroom; the unreleased stream gate still forces timeout.
     app, upstream = make_app(lambda request: httpx.Response(200, stream=stream,
                              headers={"content-type": "text/event-stream"}),
-                             config=settings(timeout_seconds=0.03))
+                             config=settings(timeout_seconds=0.5))
     async with upstream, downstream(app) as client:
-        response = await asyncio.wait_for(client.post("/v1/responses", json=PAYLOAD, headers=AUTH), 1)
+        response = await asyncio.wait_for(client.post("/v1/responses", json=PAYLOAD, headers=AUTH), 2)
     assert response.status_code == 200
     assert b"event: error" in response.content and b"response.completed" not in response.content
     assert stream.closed

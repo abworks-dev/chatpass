@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light">
+  <title>ChatPass · 本地控制台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/vendor/tabler.min.css">
+  <link rel="stylesheet" href="/assets/console.css">
+  <script src="/assets/console.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳转到主要内容</a>
+  <div class="console-layout">
+    <aside class="sidebar" aria-label="控制台导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>↗</span></span><div><span class="brand-name">ChatPass</span><span class="brand-caption">LOCAL CONSOLE</span></div></div>
+      <button id="menu-toggle" class="menu-toggle" type="button" aria-controls="sidebar-navigation" aria-expanded="false" aria-label="展开导航"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <div id="sidebar-navigation" class="sidebar-navigation">
+        <div class="nav-caption">工作空间</div>
+        <nav aria-label="主要导航">
+          <button class="nav-button active" type="button" data-view="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>概览<span class="nav-short">01</span></button>
+          <button class="nav-button" type="button" data-view="authorization"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6"/></svg>账号授权<span class="nav-short">02</span></button>
+          <button class="nav-button" type="button" data-view="key"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M12 12l9 9M16 16l3-3M18 18l3-3"/></svg>网关密钥<span class="nav-short">03</span></button>
+          <button class="nav-button" type="button" data-view="models"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>模型目录<span class="nav-short">04</span></button>
+          <button class="nav-button" type="button" data-view="clients"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>客户端接入<span class="nav-short">05</span></button>
+        </nav>
+        <div class="sidebar-note"><span class="local-dot" aria-hidden="true"></span><strong>只在你的本机</strong><p>单账号 · 回环访问<br>凭据不交给客户端</p></div>
+        <footer class="sidebar-footer">布局基于 Tabler 1.6.1<br><a href="https://github.com/tabler/tabler/blob/ec33733290bd0f314ca19f6be58bc69a6ab3e4fa/LICENSE" target="_blank" rel="noopener noreferrer">MIT 开源许可 ↗</a></footer>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div class="breadcrumb">控制台 <span aria-hidden="true">/</span> <span id="breadcrumb-current">概览</span></div><span id="session-pill" class="status-pill neutral"><span class="pill-dot" aria-hidden="true"></span>正在验证管理会话</span></header>
+      <main id="main-content" tabindex="-1">
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <div id="error-notice" class="notice notice-error" role="alert" hidden></div>
+        <section id="locked-screen" class="locked-screen" aria-labelledby="locked-title">
+          <div class="locked-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 018 0v3M12 14v3"/></svg></div>
+          <div class="eyebrow">PRIVATE BY DEFAULT</div><h1 id="locked-title">正在验证管理会话</h1>
+          <p id="locked-description">仅已授权的本地管理会话可以查看网关状态。</p>
+          <div id="locked-instructions" hidden><p>在本机终端重新启动 Web 控制台，使用终端生成的新链接打开此页面。旧链接只能使用一次，且会在 5 分钟后失效。</p><pre class="command">uv run chatpass web</pre><p class="small-note">保持终端运行。网关访问密钥不能用于解锁管理控制台。</p><button id="session-retry" class="btn btn-outline-secondary" type="button">重新检查现有会话</button></div>
+          <noscript><p>控制台需要启用 JavaScript；页面不加载任何第三方脚本。</p></noscript>
+        </section>
+        <div id="console-content" hidden>
+          <div class="page-heading"><div><div class="eyebrow">YOUR SUBSCRIPTION, YOUR WORKSPACE</div><h1 id="page-title">本地网关，一目了然。</h1><p id="page-description">从账号授权到客户端接入，在这里完成每一步。</p></div><button id="refresh-status" class="btn btn-outline-secondary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0113 2M18 17a7 7 0 01-13-2"/></svg><span>刷新状态</span></button></div>
+          <section id="view-overview" class="view" aria-label="概览">
+            <div class="status-grid">
+              <article class="card metric-card"><div class="metric-label">账号授权<span class="metric-icon" aria-hidden="true">↗</span></div><div id="metric-account" class="metric-value">等待读取</div><p id="metric-account-note">尚未读取账号状态</p></article>
+              <article class="card metric-card"><div class="metric-label">网关密钥<span class="metric-icon" aria-hidden="true">⌘</span></div><div id="metric-key" class="metric-value">等待读取</div><p id="metric-key-note">尚未读取密钥状态</p></article>
+              <article class="card metric-card"><div class="metric-label">运行时间<span class="metric-icon" aria-hidden="true">◷</span></div><div id="metric-uptime" class="metric-value numeric">—</div><p>当前网关进程的运行时间</p></article>
+              <article class="card metric-card"><div class="metric-label">网关请求<span class="metric-icon" aria-hidden="true">⇄</span></div><div id="metric-requests" class="metric-value numeric">—</div><p id="metric-request-note">失败 — · 进行中 —</p></article>
+            </div>
+            <div class="overview-grid">
+              <article class="card setup-card"><div class="card-heading"><div><div class="eyebrow">GET CONNECTED</div><h2>三步，准备好你的工作空间</h2></div><span class="subtle-tag">按需操作</span></div>
+                <ol class="setup-flow"><li><span class="step-number">1</span><div><h3>授权自己的账号</h3><p>在官方浏览器流程中确认授权。订阅凭据留在网关端。</p><span id="flow-account" class="status-pill neutral">等待读取</span></div><button class="text-button" type="button" data-go="authorization">管理授权 <span aria-hidden="true">→</span></button></li><li><span class="step-number">2</span><div><h3>创建网关访问密钥</h3><p>为客户端单独生成密钥，不需要复制官方 OAuth 凭据。</p><span id="flow-key" class="status-pill neutral">等待读取</span></div><button class="text-button" type="button" data-go="key">管理密钥 <span aria-hidden="true">→</span></button></li><li><span class="step-number">3</span><div><h3>发现模型，接入客户端</h3><p>查询实际可用模型，并确认客户端支持流式 Responses。</p><span class="status-pill neutral">客户端兼容性未实测</span></div><button class="text-button" type="button" data-go="clients">查看接入 <span aria-hidden="true">→</span></button></li></ol>
+              </article>
+              <div class="overview-side"><article class="card endpoint-card"><div class="eyebrow">LOCAL ENDPOINT</div><h2>你的 API 地址</h2><code id="overview-base-url">等待读取</code><p>仅限本机回环访问。不要通过隧道、端口转发或反向代理公开网关。</p><button class="text-button" type="button" data-copy-base>复制地址 <span aria-hidden="true">↗</span></button></article><article class="boundary-card"><div class="eyebrow">HONEST BY DESIGN</div><h2>有能力，也有边界。</h2><p>这是初始实现，不等于官方批准或账号可用。不展示虚构额度，不自动发起推理，不承诺无限使用。</p><span>Responses API · 本地优先</span></article></div>
+            </div>
+          </section>
+          <section id="view-authorization" class="view" aria-label="账号授权" hidden>
+            <div class="two-column"><article class="card action-card"><div class="card-heading"><h2>官方账号授权</h2><span id="account-pill" class="status-pill neutral">等待读取</span></div><p>点击按钮后，网关会在本机打开官方授权页面。由你决定是否继续；本页面不会接收或展示授权链接、回调地址或 OAuth token。</p><dl class="detail-list"><div><dt>授权任务</dt><dd id="login-state">尚未读取</dd></div><div><dt>凭据状态</dt><dd id="credential-state">尚未读取</dd></div><div><dt>客户端注册</dt><dd id="registration-state">尚未读取</dd></div></dl><div id="login-result" class="inline-message" role="status" aria-live="polite" hidden></div><button id="start-login" class="btn btn-primary" type="button">打开浏览器授权</button><p class="small-note">需在 180 秒内完成。取消或超时后可手动重试，不会自动重发授权请求。</p></article><aside class="card guidance-card"><div class="eyebrow">SECURE HANDOFF</div><h2>一个账号，清晰的边界</h2><ul class="check-list"><li>使用你自己的 ChatGPT 账号。</li><li>官方凭据由系统安全存储保护，不导入其他工具的凭据。</li><li>授权成功不保证订阅资格、额度或模型可用。</li><li>过期凭据是否可刷新，需由实际请求验证。</li></ul><div class="callout">没有可用的系统安全存储时会明确失败，绝不降级为明文保存。</div></aside></div>
+          </section>
+          <section id="view-key" class="view" aria-label="网关密钥" hidden>
+            <div class="two-column"><article class="card action-card"><div class="card-heading"><h2>客户端专用访问密钥</h2><span id="key-pill" class="status-pill neutral">等待读取</span></div><p>密钥只控制对本地网关的访问，不是官方 API Key，也不能登录管理控制台。创建或轮换后只显示一次。</p><div class="button-row"><button id="init-key" class="btn btn-primary" type="button" disabled>创建网关密钥</button><button id="rotate-key" class="btn btn-outline-danger" type="button" disabled>轮换密钥</button></div><div id="key-reveal" class="key-reveal" hidden><div class="reveal-heading"><strong>请现在保存密钥</strong><span class="status-pill warning">仅显示一次</span></div><p>60 秒后或离开此页面时清除。不要截图、提交到 Issue 或版本库。</p><pre id="revealed-key" aria-label="新生成的网关访问密钥"></pre><div class="button-row"><button id="copy-key" class="btn btn-primary" type="button">复制密钥</button><button id="clear-key" class="btn btn-outline-secondary" type="button">清除显示</button></div></div><p class="small-note">状态刷新不会重新显示密钥。若没有保存，只能显式轮换并更新所有客户端。</p></article><aside class="card guidance-card"><div class="eyebrow">EXPLICIT CONTROL</div><h2>轮换意味着什么？</h2><p>旧密钥立即失效，所有使用旧密钥的客户端都会失去访问权限。轮换不会改变官方账号凭据。</p><div class="callout callout-warning">只在你准备好更新所有客户端时轮换。不要将网关密钥与管理启动链接混用。</div></aside></div>
+          </section>
+          <section id="view-models" class="view" aria-label="模型目录" hidden>
+            <article class="card models-card"><div class="card-heading"><div><div class="eyebrow">LIVE DISCOVERY</div><h2>从你的账号获取模型</h2></div><button id="load-models" class="btn btn-primary" type="button">查询模型</button></div><p>只有点击查询才会向上游读取模型目录；这不是推理测试，也不验证客户端兼容性。</p><div id="models-state" class="empty-state" role="status" aria-live="polite"><span class="empty-symbol" aria-hidden="true">◇</span><h3>还没有查询模型</h3><p>模型名称和可用性以本次实际响应为准。</p></div><ul id="model-list" class="model-list" aria-label="上游返回的模型" hidden></ul><div id="selected-model" class="selection-note" hidden>已选择模型 ID：<code id="selected-model-id"></code><button id="copy-selected-model" class="text-button" type="button">复制 ID</button></div></article>
+          </section>
+          <section id="view-clients" class="view" aria-label="客户端接入" hidden>
+            <div class="two-column"><article class="card action-card"><div class="eyebrow">CONNECTION DETAILS</div><h2>把网关接入你的工具</h2><p>先查询真实模型，再填写客户端配置。示例不包含任何真实密钥。</p><div class="config-field"><span>API Base URL</span><div><code id="client-base-url">等待读取</code><button class="text-button" type="button" data-copy-base>复制地址</button></div></div><div class="config-field"><span>API Key</span><code>cp_...</code><p>填入你亲自创建并保存的网关密钥，不要填官方凭据。</p></div><div class="config-field"><span>Model</span><code id="client-model-id">请先查询并选择实际模型 ID</code><button class="text-button" type="button" data-go="models">前往模型目录 →</button></div><div class="protocol-note"><strong>接口必须是 Responses API</strong><p>不是 Chat Completions，不做协议转换。请求使用流式 <code>stream:true</code>、<code>store:false</code>；多轮对话须发送完整 <code>input</code> 历史，不能依赖 <code>previous_response_id</code>。</p></div></article><aside class="card guidance-card"><div class="eyebrow">COMPATIBILITY CHECKLIST</div><h2>接入前，确认版本能力</h2><ul class="client-list"><li><div><strong>Hermes Agent</strong><span class="status-pill neutral">未实测</span></div><p>确认当前版本支持原生流式 Responses。</p></li><li><div><strong>OpenClaw</strong><span class="status-pill neutral">未实测</span></div><p>确认 provider API 类型，以及完整历史的发送行为。</p></li><li><div><strong>DeepSeek Harness</strong><span class="status-pill neutral">未实测</span></div><p>确认 Responses 路由、流式能力及请求字段。</p></li></ul><div class="callout">控制台不自动向模型发送测试消息。真实账号和客户端验收需由你明确发起。</div></aside></div>
+          </section>
+          <footer class="content-footer"><span>ChatPass · 个人本地网关</span><span id="status-updated">尚未读取状态</span></footer>
+        </div>
+      </main>
+    </div>
+  </div>
+  <dialog id="rotate-dialog" aria-labelledby="rotate-title" aria-describedby="rotate-description"><div class="dialog-content"><span class="status-pill warning">需要确认</span><h2 id="rotate-title">轮换后，旧密钥立即失效</h2><p id="rotate-description">所有客户端都需要更新为新密钥。这不会轮换官方账号凭据，也无法恢复旧密钥。</p><div class="button-row"><button id="cancel-rotate" class="btn btn-outline-secondary" type="button" autofocus>取消，保留旧密钥</button><button id="confirm-rotate" class="btn btn-danger" type="button">确认轮换密钥</button></div></div></dialog>
+</body>
+</html>
