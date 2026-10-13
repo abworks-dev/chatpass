@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
+import os
 import re
+import time
+import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any, Protocol, TypeVar
@@ -23,6 +27,9 @@ from starlette.types import Receive, Scope, Send
 
 from .adapters import AdapterError, normalize_chat, normalize_responses
 from .bridges import BridgeError, chat_completion, chat_stream, collect_response
+from .oauth import OAuthError
+from .upstream_errors import SIWC_STATUS, read_diagnostics
+from .upstream_errors import diagnostics as safe_diagnostics
 
 UPSTREAM_BASE_URL = "https://api.openai.com/v1"
 MAX_SSE_FRAME_BYTES = 1048576
@@ -30,6 +37,82 @@ MAX_STREAM_BYTES = 64 * 1048576
 MAX_RETRY_AFTER_SECONDS = 86400
 _FRAME_END = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
 _ERROR_TERMINALS = frozenset({"response.failed", "response.incomplete", "error"})
+_LOGGER = logging.getLogger(__name__)
+_DIAGNOSTIC_EVENTS = _ERROR_TERMINALS | frozenset({
+    "response.created", "response.in_progress", "response.completed",
+    "response.output_item.added", "response.output_item.done",
+    "response.content_part.added", "response.content_part.done",
+    "response.output_text.delta", "response.output_text.done",
+    "response.function_call_arguments.delta", "response.function_call_arguments.done",
+    "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done",
+})
+_DIAGNOSTIC_CODES = frozenset({
+    "server_error", "server_is_overloaded", "rate_limit_exceeded", "insufficient_quota",
+    "invalid_api_key", "invalid_request_error", "model_not_found",
+    "context_length_exceeded", "content_filter", "max_output_tokens",
+})
+
+
+class _StreamDiagnostics:
+    """Fixed-label metadata; unknown codes require explicit one-shot local consent."""
+
+    def __init__(self, unknown_code_reporter: Callable[[str, str], None] | None = None) -> None:
+        self._unknown_code_reporter = unknown_code_reporter
+        self._unknown_code: str | None = None
+        self.request_id = uuid.uuid4().hex
+        self.started = time.monotonic()
+        self.last_event = "none"
+        self.upstream_code = "none"
+        self.frames = 0
+        self.bytes = 0
+
+    def observe(self, frame: bytes, payload: dict[str, Any] | None, event: str | None) -> None:
+        self.frames += 1
+        self.bytes += len(frame)
+        # Consume the canonical parser's validated object, never reparse the stream
+        # or retain arbitrary upstream strings.
+        if payload is None:
+            return
+        kind = payload.get("type") or event
+        self._unknown_code = None
+        self.last_event = kind if kind in _DIAGNOSTIC_EVENTS else "other"
+        nested = payload.get("response")
+        source = nested if isinstance(nested, dict) else payload
+        error = source.get("error")
+        if error is None:
+            error = payload.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        if code is None and kind == "error":
+            code = payload.get("code")
+        error_code = code  # One-shot consent covers only code, not incomplete reason text.
+        details = source.get("incomplete_details")
+        if code is None and isinstance(details, dict):
+            code = details.get("reason")
+        # A malformed or malicious metadata value is a fixed label too.
+        if code is not None:
+            self.upstream_code = code if isinstance(code, str) and code in _DIAGNOSTIC_CODES else "other"
+            if (self.upstream_code == "other" and error_code is not None
+                    and (kind in _ERROR_TERMINALS or error is not None)
+                    and self._unknown_code_reporter is not None):
+                # Narrow, bounded identifier syntax: no controls, whitespace, URLs,
+                # objects or free-form text. Invalid values never escape as text.
+                self._unknown_code = (
+                    code if isinstance(code, str) and
+                    re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", code, flags=re.ASCII)
+                    else "invalid_or_oversized_code"
+                )
+
+    def failure(self, category: str) -> None:
+        if (category == "upstream_stream_failed" and self._unknown_code is not None
+                and self._unknown_code_reporter is not None):
+            self._unknown_code_reporter(self.request_id, self._unknown_code)
+            self._unknown_code = None
+        _LOGGER.warning(
+            "ChatPass stream failure request_id=%s category=%s elapsed_ms=%d "
+            "last_event=%s upstream_code=%s frames=%d bytes=%d",
+            self.request_id, category, (time.monotonic() - self.started) * 1000,
+            self.last_event, self.upstream_code, self.frames, self.bytes,
+        )
 
 
 class GatewaySettings(Protocol):
@@ -58,7 +141,7 @@ class _GatewayError(Exception):
         return b"event: error\ndata: " + json.dumps({"error": self.error}).encode() + b"\n\n"
 
 
-def _upstream_error(status: int) -> _GatewayError:
+def _upstream_error(status: int, metadata: dict | None = None) -> _GatewayError:
     descriptions = {
         400: ("upstream_invalid_request", "Upstream rejected the request."),
         401: ("upstream_authentication_failed", "Upstream authorization failed."),
@@ -66,8 +149,34 @@ def _upstream_error(status: int) -> _GatewayError:
         429: ("upstream_rate_limit", "Upstream quota or rate limit exceeded."),
     }
     code, message = descriptions.get(status, ("upstream_error", "Upstream request failed."))
-    return _GatewayError(status if status in descriptions else 502, code, message,
-                         error_type="upstream_error")
+    metadata = safe_diagnostics({"error": metadata or {},
+                                 "request_id": (metadata or {}).get("request_id")})
+    if metadata.get("code") == "server_is_overloaded":
+        message = "上游服务繁忙，请稍后手动重试。"
+    result = _GatewayError(status if status in {400, 401, 403, 404, 409, 422, 429, 500, 502, 503, 504} else 502,
+                           metadata.get("code", code), message, param=metadata.get("param"),
+                           error_type="upstream_error")
+    if metadata.get("request_id"):
+        result.error["request_id"] = metadata["request_id"]
+    return result
+
+
+def _known_http_error(response: httpx.Response) -> _GatewayError:
+    error = _upstream_error(response.status_code, safe_diagnostics(
+        {}, header_request_id=response.headers.get("x-request-id")))
+    if response.status_code == 429:
+        error.headers = _retry_after(response)
+    return error
+
+
+def _credential_error(exc: OAuthError) -> _GatewayError:
+    allowed = {"login_required", "pending_token_validation", "identity_verification_unavailable",
+               "refresh_not_yet_allowed", "scope_not_authorized", "account_mismatch",
+               "invalid_grant", "invalid_client", "invalid_refresh_token", "refresh_token_expired",
+               "refresh_token_reused", "refresh_token_invalidated", "token_expired"}
+    code = exc.code if exc.code in allowed else "credentials_unavailable"
+    return _GatewayError(503, code, "Local authorization needs attention; check management status.",
+                         error_type="authentication_error")
 
 
 def _invalid_upstream(*, header: str | None = None, value: str = "") -> _GatewayError:
@@ -112,9 +221,32 @@ def _load_json(data: bytes) -> Any:
                       parse_float=_finite_float)
 
 
+def _frame_error(frame: bytes, header_request_id: str | None = None) -> _GatewayError:
+    metadata = safe_diagnostics({}, header_request_id=header_request_id)
+    if len(frame) <= 16384:
+        try:
+            text = frame.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            data = "\n".join(line.partition(":")[2].removeprefix(" ")
+                             for line in text.split("\n") if line.partition(":")[0] == "data")
+            metadata = safe_diagnostics(_load_json(data.encode()), header_request_id=header_request_id)
+        except (ValueError, UnicodeError, RecursionError):
+            pass
+    if "code" in metadata:
+        return _upstream_error(SIWC_STATUS[metadata["code"]], metadata)
+    error = _stream_error("upstream_stream_failed")
+    if "request_id" in metadata:
+        error.error["request_id"] = metadata["request_id"]
+    return error
+
+
 def _bridge_error(error: BridgeError) -> _GatewayError:
-    return _GatewayError(504 if error.code == "upstream_timeout" else 502,
-                         error.code, error.message, error_type="upstream_error")
+    if error.code in SIWC_STATUS:
+        return _upstream_error(SIWC_STATUS[error.code], {"code": error.code, "param": error.param,
+                                                       "request_id": error.request_id})
+    result = _GatewayError(504 if error.code == "upstream_timeout" else 502,
+                           error.code, error.message, error_type="upstream_error")
+    result.error.update(safe_diagnostics({"request_id": error.request_id}))
+    return result
 
 
 async def _chat_stream_response(frames: AsyncIterator[bytes], *, model: str,
@@ -229,7 +361,8 @@ class _SSEFrames:
             self._scan_from = max(0, len(self.buffer) - 3)
 
 
-def _event_kind(frame: bytes, *, require_response_envelope: bool = False) -> str | None:
+def _event_kind(frame: bytes, *, require_response_envelope: bool = False,
+                diagnostics: _StreamDiagnostics | None = None) -> str | None:
     try:
         text = frame.decode("utf-8")
         event, data = None, []
@@ -244,6 +377,8 @@ def _event_kind(frame: bytes, *, require_response_envelope: bool = False) -> str
             elif name == "data":
                 data.append(value)
         if not data:
+            if diagnostics is not None:
+                diagnostics.observe(frame, None, event)
             return None  # Valid comments/heartbeats, with no dispatched data event.
         payload = _load_json("\n".join(data).encode("utf-8"))
         if not isinstance(payload, dict):
@@ -269,6 +404,8 @@ def _event_kind(frame: bytes, *, require_response_envelope: bool = False) -> str
                     nested["status"] not in valid_statuses[kind] or
                     not isinstance(nested.get("output"), list)):
                 raise ValueError("Missing Responses SSE envelope")
+        if diagnostics is not None:
+            diagnostics.observe(frame, payload, event)
         if (payload.get("error") is not None or
                 isinstance(nested, dict) and nested.get("error") is not None):
             return "error"
@@ -326,8 +463,10 @@ async def _replay_chunks(prefix: list[bytes], chunks: AsyncIterator[bytes]) -> A
 
 
 async def _stream_response(response: httpx.Response, deadline: float,
-                           chunks: AsyncIterator[bytes] | None = None) -> AsyncIterator[bytes]:
+                           chunks: AsyncIterator[bytes] | None = None, *,
+                           diagnostics: _StreamDiagnostics | None = None) -> AsyncIterator[bytes]:
     frames = _SSEFrames()
+    diagnostics = diagnostics or _StreamDiagnostics()
 
     async def read_frames() -> AsyncIterator[bytes]:
         total = 0
@@ -343,19 +482,24 @@ async def _stream_response(response: httpx.Response, deadline: float,
     try:
         async with asyncio.timeout_at(deadline):
             async for frame in read_frames():
-                kind = _event_kind(frame)
+                kind = _event_kind(frame, diagnostics=diagnostics)
                 if kind == "error":
-                    yield _stream_error("upstream_stream_failed").sse()
+                    diagnostics.failure("upstream_stream_failed")
+                    yield _frame_error(frame, response.headers.get("x-request-id")).sse()
                     return
                 yield frame
                 if kind == "response.completed":
                     return  # The upstream, not this gateway, declared completion.
-            raise _stream_error()  # EOF without upstream completion is never success.
+            diagnostics.failure("eof_without_completion")
+            yield _stream_error().sse()  # EOF without upstream completion is never success.
     except (TimeoutError, httpx.TimeoutException):
+        diagnostics.failure("upstream_timeout")
         yield _timeout_error().sse()
     except _GatewayError as error:
+        diagnostics.failure(error.error["code"])
         yield error.sse()
     except httpx.HTTPError:
+        diagnostics.failure("transport_error")
         yield _stream_error().sse()
     finally:
         if chunks is not None:
@@ -382,7 +526,8 @@ class _ClosingStreamingResponse(StreamingResponse):
 
 
 async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClient | None,
-                              *, timeout: float, body_limit: int) -> dict[str, Any]:
+                              *, timeout: float, body_limit: int,
+                              on_error_headers: Callable[[_GatewayError], None] | None = None) -> dict[str, Any]:
     """The single upstream model protocol owner, shared by API and local console."""
     response = None
     try:
@@ -393,6 +538,8 @@ async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClien
                     raise ValueError
             except _GatewayError:
                 raise
+            except OAuthError as exc:
+                raise _credential_error(exc) from None
             except Exception:
                 raise _GatewayError(503, "credentials_unavailable",
                                     "Upstream credentials are unavailable; sign in locally.",
@@ -408,7 +555,9 @@ async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClien
             )
             response = await client.send(request, stream=True, auth=None, follow_redirects=False)
             if response.status_code != 200:
-                error = _upstream_error(response.status_code)
+                if on_error_headers is not None:
+                    on_error_headers(_known_http_error(response))
+                error = _upstream_error(response.status_code, await read_diagnostics(response))
                 if response.status_code == 429:
                     error.headers = _retry_after(response)
                 raise error
@@ -420,6 +569,8 @@ async def fetch_model_catalog(credentials: Credentials, client: httpx.AsyncClien
             except (ValueError, UnicodeError, RecursionError):
                 raise _invalid_upstream() from None
     except (TimeoutError, httpx.TimeoutException):
+        if response is not None and response.status_code != 200:
+            raise _known_http_error(response) from None
         raise _timeout_error() from None
     except httpx.HTTPError:
         raise _upstream_error(502) from None
@@ -453,6 +604,19 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
     closing = False
     verifications: set[asyncio.Task[bool]] = set()
     credential_tasks: set[asyncio.Task[str]] = set()
+    # Snapshot an explicit local opt-in at app creation; one capture per app.
+    # Shared across concurrent requests; claim the budget before any log call.
+    unknown_code_armed = os.environ.get("CHATPASS_DIAG_UNKNOWN_CODE_ONCE") == "1"
+
+    def report_unknown_code(request_id: str, code: str) -> None:
+        nonlocal unknown_code_armed
+        if not unknown_code_armed:
+            return
+        unknown_code_armed = False
+        _LOGGER.warning(
+            "ChatPass one-shot code diagnostic request_id=%s upstream_code=%s capture=consumed",
+            request_id, code,
+        )
 
     class AdmittedCredentials:
         async def get_access_token(self) -> str:
@@ -564,13 +728,17 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                                      error_type="rate_limit_error")
             active += 1
             acquired = True
+            diagnostics = _StreamDiagnostics(report_unknown_code if unknown_code_armed else None)
             deadline = asyncio.get_running_loop().time() + timeout
+            if models:
+                # The model helper owns its deadline and its response snapshot.
+                # A second enclosing timer would cancel its optional error read
+                # before it can preserve an already-known HTTP status.
+                catalog = await _until_disconnect(request, fetch_model_catalog(
+                    admitted_credentials, app.state.upstream_client, timeout=timeout,
+                    body_limit=body_limit))
+                return JSONResponse(catalog)
             async with asyncio.timeout_at(deadline):
-                if models:
-                    catalog = await _until_disconnect(request, fetch_model_catalog(
-                        admitted_credentials, app.state.upstream_client, timeout=timeout,
-                        body_limit=body_limit))
-                    return JSONResponse(catalog)
                 payload = None
                 if not models:
                     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -591,6 +759,8 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                             raise RuntimeError("Invalid credentials")
                     except _GatewayError:
                         raise
+                    except OAuthError as exc:
+                        raise _credential_error(exc) from None
                     except Exception:
                         raise _GatewayError(503, "credentials_unavailable",
                                              "Upstream credentials are unavailable; sign in locally.",
@@ -617,8 +787,8 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                 await _until_disconnect(request, open_response())
                 assert response is not None
                 if response.status_code != 200:
-                    # Read zero error-body bytes: token-echoing bodies are never needed.
-                    return _upstream_error(response.status_code).response(
+                    # Optional bounded metadata only; never forward remote text.
+                    return _upstream_error(response.status_code, await read_diagnostics(response)).response(
                         _retry_after(response) if response.status_code == 429 else None)
                 encoding = response.headers.get("content-encoding", "identity").lower()
                 if encoding != "identity":
@@ -632,8 +802,9 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                 chunks = None
                 if content_type is None:
                     chunks = await _until_disconnect(request, _probe_headerless_stream(response))
-                frames = _stream_response(response, deadline, chunks)
-                headers = {"X-ChatPass-Compatibility": compatibility_mode}
+                frames = _stream_response(response, deadline, chunks, diagnostics=diagnostics)
+                headers = {"X-ChatPass-Compatibility": compatibility_mode,
+                           "X-ChatPass-Request-ID": diagnostics.request_id}
                 if adapted.ignored_fields:
                     headers["X-ChatPass-Ignored-Fields"] = ",".join(adapted.ignored_fields)
                 if not adapted.stream:
@@ -658,6 +829,8 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
         except _GatewayError as error:
             return error.response({"WWW-Authenticate": "Bearer"} if error.status == 401 else None)
         except (TimeoutError, httpx.TimeoutException):
+            if response is not None and response.status_code != 200:
+                return _known_http_error(response).response()
             return _timeout_error().response()
         except httpx.HTTPError:
             return _upstream_error(502).response()

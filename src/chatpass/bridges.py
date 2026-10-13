@@ -22,9 +22,12 @@ class BridgeError(Exception):
     """Safe public error; code/message may be copied into a gateway error."""
 
     def __init__(self, code: str = "invalid_upstream_response",
-                 message: str = "Upstream returned an invalid response.") -> None:
+                 message: str = "Upstream returned an invalid response.", *,
+                 param: str | None = None, request_id: str | None = None) -> None:
         self.code = code
         self.message = message
+        self.param = param
+        self.request_id = request_id
         super().__init__(message)
 
 
@@ -72,7 +75,8 @@ def parse_event(frame: bytes) -> dict[str, Any] | None:
         error = event["error"]
         if (isinstance(error, dict) and isinstance(error.get("code"), str)
                 and isinstance(error.get("message"), str)):
-            raise BridgeError(error["code"], error["message"])
+            raise BridgeError(error["code"], error["message"], param=error.get("param"),
+                              request_id=error.get("request_id"))
         raise BridgeError()
     return event
 

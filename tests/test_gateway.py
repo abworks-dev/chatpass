@@ -394,7 +394,7 @@ async def test_string_input_is_normalized_and_absent_stream_defaults_true():
                      "store": False, "stream": True}]
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 429, 500, 302])
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500, 503, 302])
 async def test_upstream_errors_do_not_echo_tokens_or_follow_redirects(status):
     stream = TrackedStream([b'{"error":"upstream-secret gateway-secret"}'])
     calls = []
@@ -405,7 +405,7 @@ async def test_upstream_errors_do_not_echo_tokens_or_follow_redirects(status):
     app, upstream = make_app(handler)
     async with upstream, downstream(app) as client:
         response = await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)
-    assert response.status_code == (status if status in (400, 401, 403, 429) else 502)
+    assert response.status_code == (status if status in (400, 401, 403, 429, 500, 503) else 502)
     assert "upstream-secret" not in response.text and "gateway-secret" not in response.text
     assert "error" in response.json()
     assert response.headers.get("retry-after") == ("7" if status == 429 else None)
@@ -956,3 +956,147 @@ async def test_invalid_upstream_headers_have_safe_specific_diagnostics(header, v
     assert label in response.json()["error"]["message"]
     assert "upstream-secret" not in response.text
     assert stream.closed and not stream.started.is_set()
+
+
+@pytest.mark.parametrize("case,category,last_event,upstream_code", [
+    ("eof", "eof_without_completion", "response.output_text.delta", "none"),
+    ("failed", "upstream_stream_failed", "response.failed", "server_error"),
+    ("incomplete", "upstream_stream_failed", "response.incomplete", "max_output_tokens"),
+    ("unknown", "upstream_stream_failed", "other", "other"),
+    ("malformed", "invalid_upstream_stream", "none", "none"),
+    ("transport", "transport_error", "none", "none"),
+    ("timeout", "upstream_timeout", "none", "none"),
+])
+async def test_safe_stream_failure_diagnostics(caplog, case, category, last_event, upstream_code):
+    secret = "PRIVATE_BODY_TOKEN_TOOL_ARGUMENTS"
+    events = {
+        "eof": {"type": "response.output_text.delta", "delta": secret},
+        "failed": {"type": "response.failed", "response": {
+            "id": secret, "error": {"code": "server_error", "message": secret}}},
+        "incomplete": {"type": "response.incomplete", "response": {
+            "incomplete_details": {"reason": "max_output_tokens"}, "output": [secret]}},
+        "unknown": {"type": secret, "error": {"code": secret, "message": secret}},
+    }
+    error = {"transport": httpx.ReadError(secret), "timeout": httpx.ReadTimeout(secret)}.get(case)
+    if case in events:
+        chunks = [b"data: " + json.dumps(events[case]).encode() + b"\n\n"]
+    elif case == "malformed":
+        chunks = [b"data: " + secret.encode() + b"\n\n"]
+    else:
+        chunks = [b": " + secret.encode() + b"\n\n"]
+    stream = TrackedStream(chunks, error=error)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
+        return success_stream()
+
+    app, upstream = make_app(handler, config=settings(max_concurrency=1))
+    caplog.set_level("WARNING", logger="chatpass.gateway")
+    async with upstream, downstream(app) as client:
+        response = await client.post("/v1/responses", json=PAYLOAD, headers=AUTH | {
+            "X-ChatPass-Request-ID": secret})
+        retry = await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)
+    request_id = response.headers["X-ChatPass-Request-ID"]
+    assert len(request_id) == 32 and all(c in "0123456789abcdef" for c in request_id)
+    assert retry.headers["X-ChatPass-Request-ID"] != request_id
+    assert retry.content == COMPLETED and len(calls) == 2 and stream.closed
+    records = [r for r in caplog.records if r.name == "chatpass.gateway"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.exc_info is None
+    message = record.getMessage()
+    assert f"request_id={request_id}" in message
+    assert f"category={category}" in message
+    assert f"last_event={last_event}" in message
+    assert f"upstream_code={upstream_code}" in message
+    assert "elapsed_ms=" in message and "frames=" in message and "bytes=" in message
+    assert secret not in caplog.text
+    assert "upstream-secret" not in caplog.text and "gateway-secret" not in caplog.text
+    assert b"event: error" in response.content and b"response.completed" not in response.content
+
+
+@pytest.mark.parametrize("opt_in", [None, "0", "true", "1"])
+@pytest.mark.parametrize("shape", ["error", "response", "flat"])
+async def test_unknown_code_diagnostic_is_explicit_and_one_shot(monkeypatch, caplog, opt_in, shape):
+    if opt_in is None:
+        monkeypatch.delenv("CHATPASS_DIAG_UNKNOWN_CODE_ONCE", raising=False)
+    else:
+        monkeypatch.setenv("CHATPASS_DIAG_UNKNOWN_CODE_ONCE", opt_in)
+    caplog.set_level("WARNING", logger="chatpass.gateway")
+    count = 0
+
+    def handler(request):
+        nonlocal count
+        count += 1
+        if count == 1:
+            return success_stream()
+        code = "server_error" if count == 2 else "upstream_transient_test_failure"
+        detail = {"code": code, "message": "PRIVATE_MESSAGE", "param": "PRIVATE_TOOL_PARAMETER"}
+        if shape == "response":
+            payload = {"type": "response.failed", "response": {"error": detail}}
+        elif shape == "flat":
+            payload = {"type": "error", **detail}
+        else:
+            payload = {"type": "error", "error": detail}
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=TrackedStream([b"data: " + json.dumps(payload).encode() + b"\n\n"]))
+
+    app, upstream = make_app(handler)
+    # Environment changes after creation must not silently arm/rearm the app.
+    monkeypatch.setenv("CHATPASS_DIAG_UNKNOWN_CODE_ONCE", "1")
+    async with upstream, downstream(app) as client:
+        assert (await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)).content == COMPLETED
+        await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)
+        assert "one-shot code diagnostic" not in caplog.text
+        responses = await asyncio.gather(*[
+            client.post("/v1/responses", json=PAYLOAD, headers=AUTH) for _ in range(2)])
+    captures = [r.getMessage() for r in caplog.records if "one-shot code diagnostic" in r.getMessage()]
+    assert len(captures) == (1 if opt_in == "1" else 0)
+    if captures:
+        assert "upstream_code=upstream_transient_test_failure capture=consumed" in captures[0]
+        assert any(r.headers["X-ChatPass-Request-ID"] in captures[0] for r in responses)
+    else:
+        assert "upstream_transient_test_failure" not in caplog.text
+    for response in responses:
+        assert b'"code": "upstream_stream_failed"' in response.content
+        assert b"upstream_transient_test_failure" not in response.content
+    assert "PRIVATE_" not in caplog.text and "gateway-secret" not in caplog.text
+    assert "upstream-secret" not in caplog.text
+
+
+@pytest.mark.parametrize("code", [
+    "secret\nforged_log", "secret\rforged_log", "secret value", "https://private.example/token",
+    "x" * 81, {"token": "PRIVATE_TOKEN"}, ["PRIVATE_TOKEN"], 123,
+])
+async def test_one_shot_code_diagnostic_rejects_unsafe_values(monkeypatch, caplog, code):
+    monkeypatch.setenv("CHATPASS_DIAG_UNKNOWN_CODE_ONCE", "1")
+    caplog.set_level("WARNING", logger="chatpass.gateway")
+    payload = {"type": "error", "code": code, "message": "PRIVATE_MESSAGE"}
+    app, upstream = make_app(lambda request: httpx.Response(
+        200, headers={"content-type": "text/event-stream"},
+        stream=TrackedStream([b"data: " + json.dumps(payload).encode() + b"\n\n"])))
+    async with upstream, downstream(app) as client:
+        response = await client.post("/v1/responses", json=PAYLOAD, headers=AUTH)
+    captures = [r for r in caplog.records if "one-shot code diagnostic" in r.getMessage()]
+    assert len(captures) == 1 and captures[0].exc_info is None
+    assert "upstream_code=invalid_or_oversized_code capture=consumed" in captures[0].getMessage()
+    assert "PRIVATE_" not in caplog.text and "secret" not in caplog.text
+    assert b"event: error" in response.content
+
+
+def test_one_shot_ignores_non_error_metadata_and_incomplete_reason():
+    from chatpass.gateway import _event_kind, _StreamDiagnostics
+    captured = []
+    diagnostics = _StreamDiagnostics(lambda request_id, code: captured.append(code))
+    for payload in [
+        {"type": "response.created", "code": "private_metadata"},
+        {"type": "response.incomplete", "response": {
+            "incomplete_details": {"reason": "private_reason"}}},
+        {"type": "error"},
+    ]:
+        _event_kind(b"data: " + json.dumps(payload).encode() + b"\n\n", diagnostics=diagnostics)
+        diagnostics.failure("upstream_stream_failed")
+    assert captured == []

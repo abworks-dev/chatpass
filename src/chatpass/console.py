@@ -98,6 +98,7 @@ class _ConsoleState:
         self.login_task: asyncio.Task[None] | None = None
         self.storage_tasks: set[asyncio.Task[Any]] = set()
         self.models_active = False
+        self.models_error: gateway._GatewayError | None = None
         self.models_task: asyncio.Task[JSONResponse] | None = None
         self.closing = False
         self.total = self.failed = self.active = 0
@@ -387,7 +388,8 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
                 raise _error(503, "gateway_unavailable")
             return JSONResponse(await gateway.fetch_model_catalog(
                 CatalogCredentials(), app.state.upstream_client, timeout=settings.timeout_seconds,
-                body_limit=settings.max_body_bytes))
+                body_limit=settings.max_body_bytes,
+                on_error_headers=lambda error: setattr(state, "models_error", error)))
         except gateway._GatewayError:
             raise
         except Exception:
@@ -403,6 +405,7 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
         if state.closing or state.models_active:
             raise _error(429, "console_busy")
         state.models_active = True
+        state.models_error = None
         task = asyncio.create_task(query_models())
         state.models_task = task
         task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
@@ -412,6 +415,8 @@ def create_console_app(settings: gateway.GatewaySettings, store: StateStore,
         except TimeoutError:
             # The HTTP response has a deadline; ownership/admission persists until
             # the helper and its canonical credential worker actually terminate.
+            if state.models_error is not None:
+                raise state.models_error from None
             raise gateway._timeout_error() from None
 
     static = Path(__file__).with_name("static")

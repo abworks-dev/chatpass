@@ -331,7 +331,7 @@ async def test_models_errors_are_canonical_and_sanitized(setup, code, expected):
     async with upstream:
         setup.app.state.upstream_client = upstream
         response = await setup.client.get("/admin/api/models")
-    assert response.status_code == (502 if code == 500 else code)
+    assert response.status_code == code
     assert response.json()["error"]["code"] == expected
     assert SECRET not in response.text
     if code == 429:
