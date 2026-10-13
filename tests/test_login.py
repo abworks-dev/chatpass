@@ -4,9 +4,26 @@ import time
 import urllib.request
 
 import pytest
+from test_storage import MemoryKeyring
 
-from chatpass.login import CallbackServer
+from chatpass.login import CallbackServer, login
 from chatpass.oauth import LoginAttempt, OAuthError
+from chatpass.storage import StateStore
+
+
+def test_login_rejects_pending_before_browser_or_registration(tmp_path, monkeypatch):
+    store = StateStore(tmp_path, backend=MemoryKeyring())
+    with store.transaction() as state:
+        state["pending_tokens"] = {"body": {"refresh_token": "saved-successor"}}
+    original = store.read()
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Pending validation must be rejected before contacting the issuer")
+
+    monkeypatch.setattr("chatpass.login.OAuthClient", unexpected)
+    with pytest.raises(OAuthError, match="pending_token_validation"):
+        login(store)
+    assert store.read() == original
 
 
 def test_callback_exact_host_path_state_and_single_use():

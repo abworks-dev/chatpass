@@ -39,6 +39,9 @@ def main(argv=None) -> int:
     key.add_argument("action", choices=["init", "rotate"])
     signin = commands.add_parser("login", help="Authorize through the official browser flow")
     signin.add_argument("--no-browser", action="store_true")
+    signout = commands.add_parser("logout", help="Sign out locally and attempt official revocation")
+    signout.add_argument("--new-account", action="store_true",
+                         help="Also reset the issued registration for a different account")
     commands.add_parser("status", help="Display only non-secret configuration status")
     serve = commands.add_parser("serve", help="Serve the loopback Responses gateway")
     serve.add_argument("--host", default="127.0.0.1")
@@ -62,6 +65,16 @@ def main(argv=None) -> int:
         elif args.command == "login":
             login(store, open_browser=not args.no_browser)
             print("Authorization saved securely.")
+        elif args.command == "logout":
+            credentials = Credentials(store)
+            try:
+                result = credentials.logout(new_account=args.new_account)
+            finally:
+                credentials.oauth.close()
+            print(json.dumps(result, indent=2))
+            if result["revocation_state"] == "unconfirmed":
+                print("Remote revocation is unconfirmed. Disconnect ChatPass in ChatGPT Settings.")
+            print("Already admitted requests cannot be recalled.")
         elif args.command == "status":
             state = store.read() if store.path.exists() else {}
             from .console import credential_status

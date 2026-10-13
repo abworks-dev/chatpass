@@ -24,8 +24,10 @@ CLIENT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 
 
 class OAuthError(RuntimeError):
-    def __init__(self, code: str = "authorization_failed"):
+    def __init__(self, code: str = "authorization_failed", *, verified_identity: dict | None = None):
         self.code = code
+        # Private recovery evidence, never included in exception text or public errors.
+        self.verified_identity = verified_identity
         super().__init__("Authorization failed (" + code + ").")
 
 
@@ -137,7 +139,8 @@ class OAuthClient:
         return self._discovery
 
     def authorization_url(
-        self, attempt: LoginAttempt, saved_client: str | None, host_id: str
+        self, attempt: LoginAttempt, saved_client: str | None, host_id: str,
+        *, id_token_hint: str | None = None,
     ) -> str:
         params = {
             "client_id": saved_client or "dynamic_agent_client",
@@ -157,6 +160,8 @@ class OAuthClient:
         }
         if saved_client is None:
             params["agent_name_hint"] = "ChatPass"
+        elif isinstance(id_token_hint, str) and 0 < len(id_token_hint) <= 65536:
+            params["id_token_hint"] = id_token_hint
         return self.discover()["authorization_endpoint"] + "?" + urlencode(params)
 
     def exchange(self, attempt: LoginAttempt, code: str, client_id: str) -> dict:
@@ -173,6 +178,27 @@ class OAuthClient:
             },
             headers={"Accept": "application/json"},
         )
+
+    def revoke(self, client_id: str, refresh_token: str) -> None:
+        """One explicit revocation attempt; HTTP 200 may have an empty body."""
+        endpoint = self.discover().get("revocation_endpoint")
+        if not isinstance(endpoint, str):
+            raise OAuthError("invalid_discovery")
+        parts = urlsplit(endpoint)
+        if (parts.scheme != "https" or parts.netloc != "auth.openai.com"
+                or parts.username or parts.password or parts.fragment):
+            raise OAuthError("invalid_discovery")
+        try:
+            with self.client.stream(
+                "POST", endpoint, follow_redirects=False,
+                data={"token": refresh_token, "token_type_hint": "refresh_token",
+                      "client_id": client_id},
+            ) as response:
+                if response.status_code != 200:
+                    raise OAuthError("revocation_unconfirmed")
+                # No JSON or response body is required for revocation success.
+        except httpx.HTTPError:
+            raise OAuthError("revocation_unconfirmed") from None
 
     def refresh(self, client_id: str, refresh_token: str) -> dict:
         return self._json(
@@ -229,8 +255,10 @@ class OAuthClient:
                     or not math.isfinite(claims[field])
                 ):
                     raise OAuthError("invalid_id_token")
-            if claims["exp"] < receipt - 5 or claims["iat"] > receipt + 5:
+            if claims["exp"] < receipt - 5:
                 raise OAuthError("invalid_id_token")
+            if claims["iat"] > receipt + 5:
+                raise OAuthError("id_token_not_yet_valid")
             if not isinstance(claims["sub"], str) or not claims["sub"].strip():
                 raise OAuthError("invalid_id_token")
             aud = claims["aud"]
@@ -243,6 +271,8 @@ class OAuthClient:
             if subject is not None and claims["sub"] != subject:
                 raise OAuthError("account_mismatch")
             return claims
+        except jwt.ImmatureSignatureError:
+            raise OAuthError("id_token_not_yet_valid") from None
         except (jwt.PyJWTError, ValueError, TypeError, KeyError):
             raise OAuthError("invalid_id_token") from None
         except OAuthError as exc:
@@ -262,8 +292,19 @@ class OAuthClient:
     ) -> dict:
         receipt = time.time() if received_at is None else received_at
         scope = body.get("scope", old_scope)
+        identity = body.get("id_token")
+        if identity is not None or nonce is not None:
+            if not isinstance(identity, str) or not identity or len(identity) > 65536:
+                raise OAuthError("invalid_id_token")
+            subject = self.verify_identity(
+                identity, client_id, nonce=nonce, subject=subject, received_at=received_at
+            )["sub"]
+        if subject is None:
+            raise OAuthError("invalid_id_token")
         if not isinstance(scope, str) or not REQUIRED_SCOPES.issubset(scope.split()):
-            raise OAuthError("scope_not_authorized")
+            recovery = ({"client_id": client_id, "subject": subject, "id_token": identity}
+                        if nonce is not None and identity is not None else None)
+            raise OAuthError("scope_not_authorized", verified_identity=recovery)
         for field in ("access_token", "refresh_token"):
             if (
                 not isinstance(body.get(field), str)
@@ -282,15 +323,6 @@ class OAuthClient:
             raise OAuthError("invalid_token_response")
         if not isinstance(body.get("token_type"), str) or body["token_type"].lower() != "bearer":
             raise OAuthError("invalid_token_response")
-        identity = body.get("id_token")
-        if identity is not None or nonce is not None:
-            if not isinstance(identity, str) or not identity or len(identity) > 65536:
-                raise OAuthError("invalid_id_token")
-            subject = self.verify_identity(
-                identity, client_id, nonce=nonce, subject=subject, received_at=received_at
-            )["sub"]
-        if subject is None:
-            raise OAuthError("invalid_id_token")
         earliest = body.get("earliest_refresh_at", 0)
         if isinstance(earliest, str):
             try:
@@ -314,4 +346,5 @@ class OAuthClient:
             "refresh_token": body["refresh_token"],
             "expires_at": receipt + expiry,
             "earliest_refresh_at": earliest,
+            **({"id_token": identity} if identity is not None else {}),
         }

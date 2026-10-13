@@ -122,25 +122,41 @@ class CallbackServer:
         return self.result
 
 
-def login(store: StateStore, *, open_browser: bool = True, emit=print, timeout=180) -> None:
+def login(store: StateStore, *, open_browser: bool = True, emit=print, timeout=180,
+          on_authorization=None) -> None:
     store.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         with portalocker.Lock(str(store.directory / "login.lock"), timeout=0):
             with store.transaction() as state:
+                if "pending_tokens" in state:
+                    raise OAuthError("pending_token_validation")
                 registration = state.setdefault(
                     "registration", {"host_id": "urn:uuid:" + str(uuid.uuid4())}
                 )
                 host_id = registration["host_id"]
                 saved_client = registration.get("client_id")
+                current = state.get("credentials") or state.get("signed_in_identity", {})
+                hint = current.get("id_token") if current.get("client_id") == saved_client else None
+            if not current:
+                emit("ChatPass requests use your shared ChatGPT plan budget; subscription is not unlimited.")
+                emit("Manage usage: https://chatgpt.com/settings/usage. No automatic paid API fallback.")
             oauth = OAuthClient()
             try:
                 with CallbackServer() as server:
                     attempt = LoginAttempt.create(server.redirect_uri)
                     server.configure(attempt, saved_client)
-                    url = oauth.authorization_url(attempt, saved_client, host_id)
-                    if not open_browser or not webbrowser.open(url):
+                    manual_url = oauth.authorization_url(attempt, saved_client, host_id)
+                    if on_authorization is not None:
+                        on_authorization(manual_url, time.monotonic() + timeout)
+                    url = (oauth.authorization_url(attempt, saved_client, host_id, id_token_hint=hint)
+                           if hint and open_browser else manual_url)
+                    try:
+                        opened = open_browser and webbrowser.open(url)
+                    except Exception:
+                        opened = False
+                    if not opened:
                         emit("Open this authorization URL in your browser:")
-                        emit(url)
+                        emit(manual_url)
                     else:
                         emit("Complete authorization in your browser (timeout: 180 seconds).")
                     code, client_id = server.wait(timeout)

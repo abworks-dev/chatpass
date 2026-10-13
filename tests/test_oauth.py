@@ -83,6 +83,7 @@ def test_signed_id_token_nonce_subject_and_scope():
     }
     result = client.validate_tokens(body, "issued", nonce="nonce")
     assert result["subject"] == "person"
+    assert result["id_token"] == token
     with pytest.raises(OAuthError):
         client.validate_tokens(body, "issued", nonce="wrong")
     with pytest.raises(OAuthError):
@@ -121,6 +122,46 @@ def test_invalid_signed_claims_fail_closed(change):
     token = jwt.encode(claims, private, algorithm="RS256", headers={"kid": "test"})
     with pytest.raises(OAuthError):
         client.verify_identity(token, "issued", nonce="nonce")
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_future_id_token_has_actionable_error_without_relaxing_validation(checkpointed):
+    client, private = issuer_client()
+    now = int(time.time())
+    claims = {
+        "iss": ISSUER, "aud": "issued", "sub": "person",
+        "iat": now + 16, "exp": now + 3600, "nonce": "nonce",
+    }
+    token = jwt.encode(claims, private, algorithm="RS256", headers={"kid": "test"})
+    receipt = {"received_at": now} if checkpointed else {}
+    with pytest.raises(OAuthError) as failure:
+        client.verify_identity(token, "issued", nonce="nonce", **receipt)
+    assert failure.value.code == "id_token_not_yet_valid"
+    # Only a corrected clock makes the same signed identity valid.
+    verified = client.verify_identity(token, "issued", nonce="nonce", received_at=now + 16)
+    assert verified["sub"] == "person"
+    with pytest.raises(OAuthError, match="invalid_id_token"):
+        client.verify_identity(token, "issued", nonce="wrong", received_at=now + 16)
+    client.close()
+
+
+@pytest.mark.parametrize("ahead,expected", [(5, None), (6, "id_token_not_yet_valid")])
+def test_id_token_clock_tolerance_is_still_five_seconds(ahead, expected):
+    client, private = issuer_client()
+    now = int(time.time())
+    token = jwt.encode({
+        "iss": ISSUER, "aud": "issued", "sub": "person", "nonce": "nonce",
+        "iat": now + ahead, "exp": now + 3600,
+    }, private, algorithm="RS256", headers={"kid": "test"})
+    if expected:
+        with pytest.raises(OAuthError) as failure:
+            client.verify_identity(token, "issued", nonce="nonce", received_at=now)
+        assert failure.value.code == expected
+    else:
+        assert client.verify_identity(
+            token, "issued", nonce="nonce", received_at=now
+        )["sub"] == "person"
+    client.close()
 
 
 def test_token_header_injection_rejected():
