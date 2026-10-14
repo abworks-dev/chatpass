@@ -102,16 +102,16 @@ class _StreamDiagnostics:
                     else "invalid_or_oversized_code"
                 )
 
-    def failure(self, category: str) -> None:
+    def failure(self, category: str, *, timeout_phase: str = "none") -> None:
         if (category == "upstream_stream_failed" and self._unknown_code is not None
                 and self._unknown_code_reporter is not None):
             self._unknown_code_reporter(self.request_id, self._unknown_code)
             self._unknown_code = None
         _LOGGER.warning(
             "ChatPass stream failure request_id=%s category=%s elapsed_ms=%d "
-            "last_event=%s upstream_code=%s frames=%d bytes=%d",
+            "last_event=%s upstream_code=%s frames=%d bytes=%d timeout_phase=%s",
             self.request_id, category, (time.monotonic() - self.started) * 1000,
-            self.last_event, self.upstream_code, self.frames, self.bytes,
+            self.last_event, self.upstream_code, self.frames, self.bytes, timeout_phase,
         )
 
 
@@ -120,6 +120,10 @@ class GatewaySettings(Protocol):
     max_body_bytes: int
     max_concurrency: int
     timeout_seconds: float
+    connect_timeout_seconds: float
+    response_header_timeout_seconds: float
+    stream_idle_timeout_seconds: float
+    stream_total_timeout_seconds: float
 
 
 class Credentials(Protocol):
@@ -194,9 +198,31 @@ def _invalid_upstream(*, header: str | None = None, value: str = "") -> _Gateway
                          error_type="upstream_error")
 
 
-def _timeout_error() -> _GatewayError:
-    return _GatewayError(504, "upstream_timeout", "Upstream request timed out.",
-                         error_type="upstream_error")
+def _timeout_error(phase: str = "request") -> _GatewayError:
+    messages = {
+        "request": "Upstream request timed out.",
+        "preparation": "请求准备超时，请检查本地授权状态后重试。",
+        "connect": "连接上游超时，请检查网络后稍后手动重试。",
+        "pool": "等待上游连接超时，请稍后手动重试。",
+        "write": "发送上游请求超时，请检查网络后稍后手动重试。",
+        "response_headers": "等待上游响应头超时，请稍后手动重试。",
+        "stream_idle": "上游流长时间未收到数据，已超时，请稍后手动重试。",
+        "stream_total": "本次生成达到网关总时限，已停止；可调整流总时限后手动重试。",
+    }
+    phase = phase if phase in messages else "request"
+    error = _GatewayError(504, "upstream_timeout", messages[phase], error_type="upstream_error")
+    error.error["timeout_phase"] = phase
+    return error
+
+
+def _http_timeout_phase(error: httpx.TimeoutException, fallback: str) -> str:
+    if isinstance(error, httpx.ConnectTimeout):
+        return "connect"
+    if isinstance(error, httpx.PoolTimeout):
+        return "pool"
+    if isinstance(error, httpx.WriteTimeout):
+        return "write"
+    return fallback
 
 
 def _stream_error(code: str = "stream_interrupted") -> _GatewayError:
@@ -246,6 +272,8 @@ def _bridge_error(error: BridgeError) -> _GatewayError:
     result = _GatewayError(504 if error.code == "upstream_timeout" else 502,
                            error.code, error.message, error_type="upstream_error")
     result.error.update(safe_diagnostics({"request_id": error.request_id}))
+    if error.timeout_phase is not None:
+        result.error["timeout_phase"] = error.timeout_phase
     return result
 
 
@@ -422,9 +450,29 @@ def _event_kind(frame: bytes, *, require_response_envelope: bool = False,
         raise _stream_error("invalid_upstream_stream") from None
 
 
-async def _probe_headerless_stream(response: httpx.Response) -> AsyncIterator[bytes]:
+async def _stream_chunks(response: httpx.Response, idle_timeout: float) -> AsyncIterator[bytes]:
+    """Bound each upstream read, not time spent yielding to a slow downstream."""
+    chunks = response.aiter_bytes().__aiter__()
+    try:
+        while True:
+            try:
+                async with asyncio.timeout(idle_timeout):
+                    chunk = await anext(chunks)
+            except StopAsyncIteration:
+                return
+            except (TimeoutError, httpx.ReadTimeout):
+                raise _timeout_error("stream_idle") from None
+            if chunk:
+                yield chunk  # Raw bytes, including heartbeats/partial frames, prove activity.
+    finally:
+        with anyio.CancelScope(shield=True):
+            await chunks.aclose()
+
+
+async def _probe_headerless_stream(response: httpx.Response,
+                                   idle_timeout: float = 120.0) -> AsyncIterator[bytes]:
     """Require a bounded Responses SSE prelude before trusting absent media metadata."""
-    chunks = response.aiter_bytes()
+    chunks = _stream_chunks(response, idle_timeout)
     frames = _SSEFrames()
     prefix: list[bytes] = []
     size = 0
@@ -462,15 +510,17 @@ async def _replay_chunks(prefix: list[bytes], chunks: AsyncIterator[bytes]) -> A
         await chunks.aclose()
 
 
-async def _stream_response(response: httpx.Response, deadline: float,
+async def _stream_response(response: httpx.Response, deadline: float | None,
                            chunks: AsyncIterator[bytes] | None = None, *,
-                           diagnostics: _StreamDiagnostics | None = None) -> AsyncIterator[bytes]:
+                           diagnostics: _StreamDiagnostics | None = None,
+                           idle_timeout: float = 120.0) -> AsyncIterator[bytes]:
     frames = _SSEFrames()
     diagnostics = diagnostics or _StreamDiagnostics()
+    upstream_chunks = chunks if chunks is not None else _stream_chunks(response, idle_timeout)
 
     async def read_frames() -> AsyncIterator[bytes]:
         total = 0
-        async for chunk in chunks if chunks is not None else response.aiter_bytes():
+        async for chunk in upstream_chunks:
             total += len(chunk)
             if total > MAX_STREAM_BYTES:
                 raise _stream_error("stream_limit_exceeded")
@@ -479,9 +529,10 @@ async def _stream_response(response: httpx.Response, deadline: float,
         async for frame in frames.feed(b"", final=True):
             yield frame  # EOF can resolve a trailing CR, never an incomplete frame.
 
+    framed = read_frames()
     try:
         async with asyncio.timeout_at(deadline):
-            async for frame in read_frames():
+            async for frame in framed:
                 kind = _event_kind(frame, diagnostics=diagnostics)
                 if kind == "error":
                     diagnostics.failure("upstream_stream_failed")
@@ -492,18 +543,26 @@ async def _stream_response(response: httpx.Response, deadline: float,
                     return  # The upstream, not this gateway, declared completion.
             diagnostics.failure("eof_without_completion")
             yield _stream_error().sse()  # EOF without upstream completion is never success.
-    except (TimeoutError, httpx.TimeoutException):
-        diagnostics.failure("upstream_timeout")
-        yield _timeout_error().sse()
+    except TimeoutError:
+        diagnostics.failure("upstream_timeout", timeout_phase="stream_total")
+        yield _timeout_error("stream_total").sse()
+    except httpx.TimeoutException as error:
+        phase = _http_timeout_phase(error, "stream_idle")
+        diagnostics.failure("upstream_timeout", timeout_phase=phase)
+        yield _timeout_error(phase).sse()
     except _GatewayError as error:
-        diagnostics.failure(error.error["code"])
+        diagnostics.failure(error.error["code"],
+                            timeout_phase=error.error.get("timeout_phase", "none"))
         yield error.sse()
     except httpx.HTTPError:
         diagnostics.failure("transport_error")
         yield _stream_error().sse()
     finally:
-        if chunks is not None:
-            await chunks.aclose()
+        with anyio.CancelScope(shield=True):
+            try:
+                await framed.aclose()
+            finally:
+                await upstream_chunks.aclose()
 
 
 class _ClosingStreamingResponse(StreamingResponse):
@@ -599,6 +658,27 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
     timeout = float(settings.timeout_seconds)
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Timeout must be positive and finite")
+    # Legacy injected settings without the new fields keep their old budgets.
+    connect_timeout = getattr(settings, "connect_timeout_seconds", timeout)
+    header_timeout = getattr(settings, "response_header_timeout_seconds", timeout)
+    idle_timeout = getattr(settings, "stream_idle_timeout_seconds", timeout)
+    total_timeout = getattr(settings, "stream_total_timeout_seconds", timeout)
+    for name, value, allow_zero, upper in (
+        ("connect", connect_timeout, False, 600),
+        ("response_headers", header_timeout, False, 3600),
+        ("stream_idle", idle_timeout, False, 3600),
+        ("stream_total", total_timeout, True, 86400),
+    ):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value > upper
+                or value < 0 or (not allow_zero and value == 0)):
+            raise ValueError(f"Invalid {name} timeout")
+    inference_http_timeout = httpx.Timeout(
+        connect_timeout, connect=connect_timeout, pool=connect_timeout,
+        # HTTPX keeps this read limit for the body too. The absolute header
+        # scope and per-chunk idle scope enforce their own smaller budgets.
+        write=connect_timeout, read=max(header_timeout, idle_timeout),
+    )
     body_limit, concurrency_limit = settings.max_body_bytes, settings.max_concurrency
     active = 0  # Modified without awaits, on the app event loop: no queued semaphore wait.
     closing = False
@@ -708,6 +788,8 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
         handed_off = False
         acquired = False
         released = False
+        diagnostics: _StreamDiagnostics | None = None
+        timeout_phase = "preparation"
 
         async def close() -> None:
             nonlocal active, released
@@ -738,7 +820,7 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                     admitted_credentials, app.state.upstream_client, timeout=timeout,
                     body_limit=body_limit))
                 return JSONResponse(catalog)
-            async with asyncio.timeout_at(deadline):
+            async with asyncio.timeout_at(deadline) as preparation_budget:
                 payload = None
                 if not models:
                     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -752,7 +834,7 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                     except (ValueError, UnicodeError, RecursionError):
                         raise _GatewayError(400, "invalid_json", "Request body is not valid JSON.") from None
                 async def open_response() -> None:
-                    nonlocal response
+                    nonlocal response, timeout_phase
                     try:
                         token = await admitted_credentials.get_access_token()
                         if not isinstance(token, str) or not token or re.search(r"\s", token):
@@ -779,8 +861,10 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                     upstream_request = httpx.Request(
                         "POST", UPSTREAM_BASE_URL + "/responses",
                         headers=headers, content=content,
-                        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+                        extensions={"timeout": inference_http_timeout.as_dict()},
                     )
+                    timeout_phase = "response_headers"
+                    preparation_budget.reschedule(asyncio.get_running_loop().time() + header_timeout)
                     response = await upstream.send(upstream_request, stream=True, auth=None,
                                                    follow_redirects=False)
 
@@ -799,10 +883,18 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
                 media_type = (content_type or "").split(";", 1)[0].strip().lower()
                 if content_type is not None and media_type != "text/event-stream":
                     raise _invalid_upstream(header="content-type", value=media_type)
+                # Preparation/header time never truncates a healthy response body.
+                preparation_budget.reschedule(None)
+                stream_deadline = (asyncio.get_running_loop().time() + total_timeout
+                                   if total_timeout else None)
                 chunks = None
                 if content_type is None:
-                    chunks = await _until_disconnect(request, _probe_headerless_stream(response))
-                frames = _stream_response(response, deadline, chunks, diagnostics=diagnostics)
+                    timeout_phase = "stream_total"
+                    async with asyncio.timeout_at(stream_deadline):
+                        chunks = await _until_disconnect(
+                            request, _probe_headerless_stream(response, idle_timeout))
+                frames = _stream_response(response, stream_deadline, chunks,
+                                          diagnostics=diagnostics, idle_timeout=idle_timeout)
                 headers = {"X-ChatPass-Compatibility": compatibility_mode,
                            "X-ChatPass-Request-ID": diagnostics.request_id}
                 if adapted.ignored_fields:
@@ -825,13 +917,23 @@ def create_app(settings: GatewaySettings, credentials: Credentials,
         except AdapterError as error:
             return _GatewayError(400, error.code, error.message, param=error.param).response()
         except BridgeError as error:
-            return _bridge_error(error).response()
+            headers = {"X-ChatPass-Request-ID": diagnostics.request_id} if diagnostics else None
+            return _bridge_error(error).response(headers)
         except _GatewayError as error:
+            if error.error["code"] == "upstream_timeout" and diagnostics is not None:
+                diagnostics.failure("upstream_timeout",
+                                    timeout_phase=error.error.get("timeout_phase", "request"))
+                return error.response({"X-ChatPass-Request-ID": diagnostics.request_id})
             return error.response({"WWW-Authenticate": "Bearer"} if error.status == 401 else None)
-        except (TimeoutError, httpx.TimeoutException):
+        except (TimeoutError, httpx.TimeoutException) as error:
             if response is not None and response.status_code != 200:
                 return _known_http_error(response).response()
-            return _timeout_error().response()
+            phase = (_http_timeout_phase(error, timeout_phase)
+                     if isinstance(error, httpx.TimeoutException) else timeout_phase)
+            if diagnostics is not None:
+                diagnostics.failure("upstream_timeout", timeout_phase=phase)
+            headers = {"X-ChatPass-Request-ID": diagnostics.request_id} if diagnostics else None
+            return _timeout_error(phase).response(headers)
         except httpx.HTTPError:
             return _upstream_error(502).response()
         finally:

@@ -53,11 +53,31 @@ def main(argv=None) -> int:
     for command in (serve, web):
         command.add_argument("--compatibility-mode", choices=("compatible", "strict"),
                              default="compatible", help="Filter unsupported tuning fields or reject them")
+        for flag, default, help_text in (
+            ("preparation-timeout", Settings.timeout_seconds,
+             "Authentication/preparation/catalog budget in seconds"),
+            ("connect-timeout", Settings.connect_timeout_seconds,
+             "Upstream connect/pool/write timeout in seconds"),
+            ("response-header-timeout", Settings.response_header_timeout_seconds,
+             "Upstream response-header budget in seconds"),
+            ("stream-idle-timeout", Settings.stream_idle_timeout_seconds,
+             "Maximum upstream stream read inactivity in seconds"),
+            ("stream-total-timeout", Settings.stream_total_timeout_seconds,
+             "Total stream budget in seconds; 0 disables only total"),
+        ):
+            command.add_argument(f"--{flag}", type=float, default=default, help=help_text)
     args = parser.parse_args(argv)
     try:
         if args.command in ("serve", "web"):
-            settings = Settings(data_dir=args.data_dir, host=args.host, port=args.port,
-                                compatibility_mode=args.compatibility_mode)
+            settings = Settings(
+                data_dir=args.data_dir, host=args.host, port=args.port,
+                compatibility_mode=args.compatibility_mode,
+                timeout_seconds=args.preparation_timeout,
+                connect_timeout_seconds=args.connect_timeout,
+                response_header_timeout_seconds=args.response_header_timeout,
+                stream_idle_timeout_seconds=args.stream_idle_timeout,
+                stream_total_timeout_seconds=args.stream_total_timeout,
+            )
         store = StateStore(args.data_dir)
         if args.command == "key":
             issue = store.initialize_gateway_key if args.action == "init" else store.rotate_gateway_key

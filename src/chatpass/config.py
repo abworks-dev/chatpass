@@ -21,7 +21,11 @@ class Settings:
     upstream_base_url: str = field(default="https://api.openai.com/v1", init=False)
     max_body_bytes: int = 1048576
     max_concurrency: int = 8
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 120.0  # Preparation, authentication and management/catalog.
+    connect_timeout_seconds: float = 10.0
+    response_header_timeout_seconds: float = 600.0
+    stream_idle_timeout_seconds: float = 180.0
+    stream_total_timeout_seconds: float = 1800.0
     compatibility_mode: str = "compatible"
 
     def __post_init__(self):
@@ -39,3 +43,13 @@ class Settings:
             raise ValueError("Invalid concurrency or request-size limit.")
         if not math.isfinite(self.timeout_seconds) or not 1 <= self.timeout_seconds <= 600:
             raise ValueError("Timeout must be finite and between 1 and 600 seconds.")
+        for name, lower, upper in (
+            ("connect_timeout_seconds", 1, 600),
+            ("response_header_timeout_seconds", 1, 3600),
+            ("stream_idle_timeout_seconds", 1, 3600),
+            ("stream_total_timeout_seconds", 0, 86400),
+        ):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or not lower <= value <= upper):
+                raise ValueError(f"{name} must be finite and between {lower} and {upper} seconds.")

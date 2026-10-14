@@ -4,7 +4,8 @@ Supported output is assistant messages containing output_text and function_call
 items. Reasoning items are nonvisible metadata: Chat cannot roundtrip opaque
 reasoning; use native Responses for that. Refusals, custom tools and other
 modalities fail closed. Only a response.completed snapshot proves success.
-Gateway error frames are already sanitized: preserve only their code/message.
+Gateway error frames are already sanitized: preserve safe error metadata only;
+timeout phases must belong to the fixed gateway phase enumeration.
 All bridge-generated error messages are static and never include upstream data.
 """
 
@@ -23,11 +24,17 @@ class BridgeError(Exception):
 
     def __init__(self, code: str = "invalid_upstream_response",
                  message: str = "Upstream returned an invalid response.", *,
-                 param: str | None = None, request_id: str | None = None) -> None:
+                 param: str | None = None, request_id: str | None = None,
+                 timeout_phase: str | None = None) -> None:
         self.code = code
         self.message = message
         self.param = param
         self.request_id = request_id
+        self.timeout_phase = (timeout_phase if code == "upstream_timeout"
+                              and isinstance(timeout_phase, str) and timeout_phase in (
+                                  "request", "preparation", "connect", "pool", "write",
+                                  "response_headers", "stream_idle", "stream_total",
+                              ) else None)
         super().__init__(message)
 
 
@@ -76,7 +83,8 @@ def parse_event(frame: bytes) -> dict[str, Any] | None:
         if (isinstance(error, dict) and isinstance(error.get("code"), str)
                 and isinstance(error.get("message"), str)):
             raise BridgeError(error["code"], error["message"], param=error.get("param"),
-                              request_id=error.get("request_id"))
+                              request_id=error.get("request_id"),
+                              timeout_phase=error.get("timeout_phase"))
         raise BridgeError()
     return event
 
