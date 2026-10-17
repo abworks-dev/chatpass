@@ -3,7 +3,8 @@
 Supported output is assistant messages containing output_text and function_call
 items. Reasoning items are nonvisible metadata: Chat cannot roundtrip opaque
 reasoning; use native Responses for that. Refusals, custom tools and other
-modalities fail closed. Only a response.completed snapshot proves success.
+modalities fail closed. Only response.completed proves success; completed item
+snapshots can restore an empty terminal output, never partial deltas or EOF.
 Gateway error frames are already sanitized: preserve safe error metadata only;
 timeout phases must belong to the fixed gateway phase enumeration.
 All bridge-generated error messages are static and never include upstream data.
@@ -76,6 +77,8 @@ def parse_event(frame: bytes) -> dict[str, Any] | None:
         event = json.loads(payload, parse_constant=_constant, parse_float=_float)
         if not isinstance(event, dict):
             raise BridgeError()
+        if "type" in event and not isinstance(event["type"], str):
+            raise BridgeError()
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise BridgeError() from exc
     if "error" in event:
@@ -109,8 +112,107 @@ def _completed(event: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+def _unique_output(output: list[Any]) -> list[Any]:
+    """Reject ambiguous output identities before callers can execute tools."""
+    identifiers: set[str] = set()
+    calls: set[str] = set()
+    for item in output:
+        if not isinstance(item, dict):
+            raise BridgeError()
+        identifier = item.get("id")
+        if identifier is not None:
+            if not isinstance(identifier, str) or not identifier or identifier in identifiers:
+                raise BridgeError()
+            identifiers.add(identifier)
+        if not isinstance(item.get("type"), str):
+            raise BridgeError()
+        if item["type"] in {"function_call", "custom_tool_call"}:
+            call_id = item.get("call_id")
+            if not isinstance(call_id, str) or not call_id or call_id in calls:
+                raise BridgeError()
+            calls.add(call_id)
+            name = item.get("name")
+            value = item.get("arguments" if item["type"] == "function_call" else "input")
+            if not isinstance(name, str) or not name or not isinstance(value, str):
+                raise BridgeError()
+    return output
+
+
+class _CompletedItems:
+    """Reconcile completed item snapshots; deltas never establish completion."""
+
+    def __init__(self) -> None:
+        self.identity: tuple[str, int] | None = None
+        self.items: dict[int, dict[str, Any]] = {}
+        self.added: dict[int, dict[str, Any]] = {}
+
+    def observe(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind in {"response.created", "response.in_progress"}:
+            response = event.get("response")
+            if not isinstance(response, dict):
+                raise BridgeError()
+            identity = _identity(response)
+            if self.identity is not None and self.identity != identity:
+                raise BridgeError()
+            self.identity = identity
+        elif kind == "response.output_item.added":
+            index = _index(event, "output_index")
+            item = event.get("item")
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                raise BridgeError()
+            if index in self.added or index in self.items:
+                raise BridgeError()
+            self.added[index] = item
+        elif kind == "response.output_item.done":
+            index = _index(event, "output_index")
+            item = event.get("item")
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                raise BridgeError()
+            if item.get("status") not in (None, "completed"):
+                raise BridgeError()
+            added = self.added.get(index, {})
+            if any(key in added and added[key] != item.get(key)
+                   for key in ("id", "type", "call_id", "name", "namespace")):
+                raise BridgeError()
+            if index in self.items and self.items[index] != item:
+                raise BridgeError()
+            self.items[index] = item
+
+    def complete(self, event: dict[str, Any]) -> dict[str, Any]:
+        response = _completed(event)
+        if self.identity is not None and self.identity != _identity(response):
+            raise BridgeError()
+        output = response["output"]
+        if not output and self.added.keys() - self.items.keys():
+            raise BridgeError()
+        for index, item in self.added.items():
+            if output:
+                if index >= len(output) or not isinstance(output[index], dict):
+                    raise BridgeError()
+                if any(key in item and item[key] != output[index].get(key)
+                       for key in ("id", "type", "call_id", "name", "namespace")):
+                    raise BridgeError()
+        if not output and self.items:
+            if sorted(self.items) != list(range(len(self.items))):
+                raise BridgeError()
+            return {**response, "output": _unique_output(
+                [self.items[i] for i in range(len(self.items))])}
+        if self.items:
+            output = list(output)
+        for index, item in self.items.items():
+            if index >= len(output) or not isinstance(output[index], dict):
+                raise BridgeError()
+            final = output[index]
+            if any(key in final and final[key] != value for key, value in item.items()):
+                raise BridgeError()
+            output[index] = {**item, **final}
+        return {**response, "output": _unique_output(output)}
+
+
 async def collect_response(frames: AsyncIterator[bytes]) -> dict[str, Any]:
-    """Return the terminal completed response, never a delta reconstruction."""
+    """Collect completed snapshots, including items omitted by the terminal output."""
+    completed_items = _CompletedItems()
     total = 0
     async for frame in frames:
         total += len(frame)
@@ -119,8 +221,9 @@ async def collect_response(frames: AsyncIterator[bytes]) -> dict[str, Any]:
         event = parse_event(frame)
         if event is None:
             continue
+        completed_items.observe(event)
         if event.get("type") == "response.completed":
-            return _completed(event)
+            return completed_items.complete(event)
         if event.get("type") in {"response.failed", "response.incomplete", "error"}:
             raise _interrupted()
     raise _interrupted()
@@ -153,6 +256,8 @@ def _outputs(response: dict[str, Any]) -> tuple[list[tuple[int, int, str]],
         elif item.get("type") == "reasoning":
             continue
         elif item.get("type") == "function_call":
+            if item.get("namespace") is not None:
+                raise _unsupported()
             if any(not isinstance(item.get(key), str) for key in ("call_id", "name", "arguments")):
                 raise BridgeError()
             if not item["call_id"] or not item["name"]:
@@ -160,6 +265,7 @@ def _outputs(response: dict[str, Any]) -> tuple[list[tuple[int, int, str]],
             tools.append((index, item))
         else:
             raise _unsupported()
+    _unique_output(output)
     return texts, tools
 
 
@@ -236,11 +342,13 @@ async def chat_stream(frames: AsyncIterator[bytes], *, model: str,
     to contiguous tool indices; the terminal snapshot must agree with all bytes
     already emitted. Memory and input are independently bounded to 64 MiB.
     """
+    completed_items = _CompletedItems()
     identity: tuple[str, int] | None = None
     role_sent = False
     texts: dict[tuple[int, int], str] = {}
     emitted_text = ""
     tools: dict[int, dict[str, Any]] = {}
+    call_ids: set[str] = set()
     total = 0
     buffered = 0
 
@@ -264,6 +372,7 @@ async def chat_stream(frames: AsyncIterator[bytes], *, model: str,
         event = parse_event(frame)
         if event is None:
             continue
+        completed_items.observe(event)
         kind = event.get("type")
         if kind in {"response.failed", "response.incomplete", "error"}:
             raise _interrupted()
@@ -297,10 +406,15 @@ async def chat_stream(frames: AsyncIterator[bytes], *, model: str,
             if not isinstance(item, dict):
                 raise BridgeError()
             if item.get("type") == "function_call":
+                if item.get("namespace") is not None:
+                    raise _unsupported()
                 if identity is None or index in tools:
                     raise BridgeError()
                 if any(not isinstance(item.get(k), str) or not item[k] for k in ("call_id", "name")):
                     raise BridgeError()
+                if item["call_id"] in call_ids:
+                    raise BridgeError()
+                call_ids.add(item["call_id"])
                 arguments = item.get("arguments", "")
                 if not isinstance(arguments, str):
                     raise BridgeError()
@@ -323,7 +437,7 @@ async def chat_stream(frames: AsyncIterator[bytes], *, model: str,
             yield chunk({"tool_calls": [{"index": tools[index]["index"],
                                          "function": {"arguments": delta}}]})
         elif kind == "response.completed":
-            response = _completed(event)
+            response = completed_items.complete(event)
             # Validate the entire snapshot before emitting missing content or success.
             completion = chat_completion(response, model=model)
             final_identity = _identity(response)

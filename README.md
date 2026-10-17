@@ -88,7 +88,7 @@ Model：模型目录或 GET /v1/models 返回的 data[].id
 
 若启动时改了端口，API 地址也要相应修改。网关密钥**不是 OpenAI 官方 API Key 或 OAuth token**，必须通过正在运行的 ChatPass 使用；不要把订阅凭据粘贴到客户端，也不要照搬未经查询的模型名。
 
-当前源码支持原生 Responses 和 Chat Completions 的流式／非流式接口，优先使用原生流式 Responses。有限授权诊断及用户反馈已确认 DSH 新会话可用，但不是所有客户端或所有协议模式的验收；真实终帧输出为空的聚合缺口仍未解决。Hermes、OpenClaw 与 DSH 的实际版本、历史和工具轮须逐一验证，见 [客户端说明](docs/clients.md)。
+当前源码支持原生 Responses 和 Chat Completions 的流式／非流式接口，优先使用原生流式 Responses。有限授权诊断及用户反馈已确认 DSH 新会话可用，但不是所有客户端或所有协议模式的验收；已加入空终帧输出的完成项重建及模拟回归，真实新版验收仍待进行。Hermes、OpenClaw 与 DSH 的实际版本、历史和工具轮须逐一验证，见 [客户端说明](docs/clients.md)。
 
 ## 与订阅中转平台的区别
 
@@ -109,11 +109,11 @@ Model：模型目录或 GET /v1/models 返回的 data[].id
 当前源码提供 `GET /v1/models`、`POST /v1/responses`、`POST /v1/chat/completions`，不是完整 OpenAI API 兼容层，也不代表已经发布或全部真实客户端验收。
 
 - 两种推理接口可流式或非流式；上游始终 `stream:true`、`store:false`，只有 `response.completed` 算成功。
-- 多轮须携带完整历史；不支持 `previous_response_id`、后台任务、服务器状态引用和托管工具。
-- 原生 Responses 保留函数/自定义工具和 opaque reasoning 历史；Chat 的较窄子集不冒充无损兼容。`system` 转为 `developer`。
+- 多轮须携带完整历史；不支持 `previous_response_id`、后台任务、服务器状态引用及文件搜索、Code Interpreter、托管 MCP 等工具。网页搜索仅原生 Responses 可请求，实际资格由模型及账号／工作区策略决定。
+- 原生 Responses 保留函数／自定义工具、命名空间、`additional_tools` 和 opaque reasoning 历史；Chat 支持普通函数工具的较窄子集，命名空间／自定义工具明确拒绝，不冒充无损兼容。`system` 转为 `developer`。
 - 默认兼容模式忽略列明的不支持调参字段，响应头 `X-ChatPass-Ignored-Fields` 标出名称；忽略输出上限不等于实现其约束。使用 `--compatibility-mode strict` 可明确拒绝。
 
-真实工具事件有输出而最终快照 `output` 为空的已知聚合缺口仍未修复，暂不据模拟通过承诺非流式／Chat 完整兼容。
+当最终快照 `output` 为空时，聚合器使用连续索引的 `response.output_item.done` 完成项重建输出；仍须收到成功 `response.completed`，冲突、重复身份、缺项或截断不能算成功。此修复已有本地模拟回归，尚未重验真实上游／客户端，不承诺非流式／Chat 完整兼容。`reasoning`、`text`、`include` 等原生字段保留；未有 SIWC 支持证据的调参不会因通用 API 文档而放开。
 
 ### 凭据与访问安全
 

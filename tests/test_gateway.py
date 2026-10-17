@@ -766,7 +766,7 @@ async def test_preview_unsupported_fields_are_explicitly_rejected_in_strict_mode
 
 
 @pytest.mark.parametrize("override", [
-    {"tools": [{"type": "web_search_preview"}]}, {"tools": [{"type": "file_search"}]},
+    {"tools": [{"type": "tool_search"}]}, {"tools": [{"type": "file_search"}]},
     {"tools": [{"type": "code_interpreter"}]}, {"tools": [{"type": "unknown"}]},
 ])
 async def test_unsupported_hosted_tools_are_rejected(override):

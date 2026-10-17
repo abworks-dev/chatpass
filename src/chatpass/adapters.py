@@ -135,6 +135,21 @@ def _tool(tool: Any, *, chat: bool) -> dict[str, Any]:
     if not isinstance(tool, dict):
         _invalid("tools")
     kind = tool.get("type")
+    _string(kind, "tools", nonempty=True)
+    if not chat and kind == "namespace":
+        _string(tool.get("name"), "tools", nonempty=True)
+        _string(tool.get("description"), "tools")
+        children = tool.get("tools")
+        if not isinstance(children, list):
+            _invalid("tools")
+        if any(not isinstance(child, dict) or child.get("type") not in ("function", "custom")
+               for child in children):
+            _unsupported("tools")
+        tool["tools"] = [_tool(child, chat=False) for child in children]
+        return tool
+    if not chat and kind in {"web_search", "web_search_preview", "web_search_preview_2025_03_11"}:
+        # Eligibility and search options remain enforced by the public upstream.
+        return tool
     if kind != "function" and (chat or kind != "custom"):
         _unsupported("tools")
     if chat:
@@ -149,9 +164,10 @@ def _tool(tool: Any, *, chat: bool) -> dict[str, Any]:
     else:
         result = tool
     _string(result.get("name"), "tools", nonempty=True)
-    if "description" in result:
+    if "description" in result and not (kind == "function" and result["description"] is None):
         _string(result["description"], "tools")
-    if "parameters" in result and not isinstance(result["parameters"], dict):
+    if "parameters" in result and result["parameters"] is not None and not isinstance(
+            result["parameters"], dict):
         _invalid("tools")
     if "strict" in result and result["strict"] is None:
         del result["strict"]
@@ -179,6 +195,7 @@ def _tools(result: dict[str, Any], *, chat: bool) -> None:
         return
     if not isinstance(choice, dict):
         _invalid("tool_choice")
+    _string(choice.get("type"), "tool_choice", nonempty=True)
     if chat:
         if choice.get("type") != "function":
             _unsupported("tool_choice")
@@ -190,9 +207,14 @@ def _tools(result: dict[str, Any], *, chat: bool) -> None:
         _string(function.get("name"), "tool_choice", nonempty=True)
         result["tool_choice"] = {"type": "function", "name": function["name"]}
     else:
+        if choice.get("type") in {"web_search", "web_search_preview",
+                                  "web_search_preview_2025_03_11"}:
+            return
         if choice.get("type") not in ("function", "custom"):
             _unsupported("tool_choice")
         _string(choice.get("name"), "tool_choice", nonempty=True)
+        if "namespace" in choice:
+            _string(choice["namespace"], "tool_choice", nonempty=True)
 
 
 def _responses_content(content: Any, *, assistant: bool) -> None:
@@ -234,9 +256,9 @@ def _responses_input(value: Any) -> Any:
     for item in value:
         if not isinstance(item, dict):
             _invalid("input")
-        if "id" in item:
-            _string(item["id"], "input", nonempty=True)
         kind = item.get("type", "message")
+        if "id" in item and not (kind == "additional_tools" and item["id"] is None):
+            _string(item["id"], "input", nonempty=True)
         if kind == "message":
             role = item.get("role")
             if role not in ("system", "developer", "user", "assistant"):
@@ -246,11 +268,30 @@ def _responses_input(value: Any) -> Any:
             _responses_content(item["content"], assistant=role == "assistant")
             if role == "system":
                 item["role"] = "developer"
+        elif kind == "additional_tools":
+            if item.get("role") != "developer":
+                _invalid("input")
+            if not isinstance(item.get("tools"), list):
+                _invalid("input")
+            item["tools"] = [_tool(tool, chat=False) for tool in item["tools"]]
+        elif kind == "web_search_call":
+            _string(item.get("id"), "input", nonempty=True)
+            if item.get("status") != "completed":
+                _invalid("input")
+            if "action" in item and item["action"] is not None and not isinstance(
+                    item["action"], dict):
+                _invalid("input")
         elif kind in ("function_call", "custom_tool_call"):
+            if "namespace" in item:
+                _string(item["namespace"], "input", nonempty=True)
             _string(item.get("call_id"), "input", nonempty=True)
             _string(item.get("name"), "input", nonempty=True)
             _string(item.get("arguments" if kind == "function_call" else "input"), "input")
         elif kind in ("function_call_output", "custom_tool_call_output"):
+            if kind == "function_call_output":
+                for key in ("name", "namespace"):
+                    if key in item and item[key] is not None:
+                        _string(item[key], "input", nonempty=True)
             _string(item.get("call_id"), "input", nonempty=True)
             _responses_content(item.get("output"), assistant=False)
         elif kind == "reasoning":

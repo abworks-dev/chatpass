@@ -1,5 +1,17 @@
 # Implementation checkpoints
 
+> Current review (2026-10-18): the user separately authorized reviewing, committing and pushing the related implementation and documentation. Fresh checks passed: gateway **832 passed, 3 skipped**, Ruff clean; plugin typechecks, **49 tests** and build passed. The no-Git statements below preserve earlier task boundaries, not the current authorization. Live upstream/client and plugin-host acceptance remain pending; see [verification](verification.md#2026-10-18-提交前复核).
+
+## Follow-up: completed-output and tool compatibility (local repair complete)
+
+Current local repair supersedes the older unresolved-aggregation statements below; those sections describe historical evidence. The shared collector/Chat completion owner now reconstructs empty terminal output from indexed completed items only after successful `response.completed`. Conflicting snapshots, duplicate item/call identities, missing completed items and EOF/errors do not establish success. Native opaque reasoning/custom items are retained; Chat explicitly rejects namespace/custom semantics it cannot represent.
+
+Native adapters now accept function/custom namespaces, developer `additional_tools`, conditional web search and completed search history; nullable function schema/description and namespace call/output fields are supported. Eligibility comes from SIWC-specific preview documentation; generic Responses reference is used only for wire shape. Existing reasoning/text/include forwarding is covered. No new sampling/output-limit or service-tier support was verified, so conservative restrictions remain.
+
+Repair-stage historical final local evidence: **775 passed, 3 skipped** (30.78s); Ruff `--no-cache` and `git diff --check` passed. New tests cover reconstructed native/Chat responses, streamed argument suffixes, function result roundtrips, conflicts/duplicates/index gaps/incomplete events and tool-declaration boundaries. Independent advisory review closed duplicate-call identity and quadratic merge problems; final code review has no remaining concrete Critical/Important findings. The final suite used test substitutes, not actual accounts.
+
+No live authorization/inference, credential access, client/server replacement, dependencies, stage/commit/push or publication. Three opt-in checks (native keyring, browser, distribution) remain skipped; actual updated-version upstream/client acceptance is pending. See [current verification](verification.md#输出聚合与工具兼容本地修复) and [client boundaries](clients.md).
+
 ## Follow-up: SIWC lifecycle (local implementation complete)
 
 Approved narrow scope implemented at the existing credential/storage/network owners: candidate isolation; explicit CLI/console logout and normal-vs-new-account registration handling; bounded safe HTTP/SSE errors; returning hints and authenticated hint-free continuation links; verified identity without plan permission; refresh-wait and shared-budget UI. One local account/public upstream/encrypted state/no uncertain refresh or inference replay/no billing fallback remain intact. Pre-existing/concurrent compatibility, stream diagnosis and client-key UI changes were preserved, not claimed as this task's contributions.

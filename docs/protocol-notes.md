@@ -43,6 +43,16 @@ Collected during initial implementation using agent-reach / GitHub gh API. Offic
 
 These are independently implemented protocol observations and mocked behavior checks, not new live account/revocation evidence or copied DevKit source. The previously documented limited DSH live probes remain separate historical evidence.
 
+## Responses compatibility follow-up
+
+New public-document readback used the [SIWC preview restrictions](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations.md) for eligibility and the [Responses wire reference](https://developers.openai.com/api/reference/resources/responses/methods/create.md) only for eligible feature shapes. No DevKit code or prose was imported.
+
+- Native requests now accept function/custom namespaces and developer-role `additional_tools` history entries. Namespace children remain function/custom only; calls keep `namespace` separate from `name`. Function schema/description may be null, and nullable `strict` keeps the existing omission behavior.
+- Web-search declarations and completed web-search history can be forwarded by native Responses. This is not a local search executor or a guarantee of entitlement: the selected model and account/workspace policy remain authoritative. File search, Code Interpreter, hosted MCP, tool search and programmatic tool calling remain rejected.
+- Existing reasoning, text-format/verbosity and include forwarding is regression-covered. No newly verified sampling/output-limit support was found. Those documented unsupported options remain omitted/rejected; `service_tier` support is unconfirmed and its current conservative behavior is unchanged. Generic API image-detail extensions are not evidence of SIWC support and were not enabled.
+- The historical live empty-terminal case motivates one completed-item reconstruction owner shared by nonstream collection and Chat. It retains indexed `output_item.done` snapshots and uses them only after successful `response.completed`; populated terminal output is reconciled rather than silently overwritten. Ambiguous identity, duplicate IDs/call IDs, gaps or contradictory output fail closed; empty-terminal reconstruction also rejects added items without a completed item snapshot. Raw native SSE passthrough is unchanged. Chat cannot represent namespace/custom-tool semantics and rejects them explicitly.
+- Local mock regressions are implementation evidence, not updated live-service acceptance. Credential lifecycle, public upstream, forced stream/store flags, no-retry behavior and bounded stream limits are unchanged.
+
 ## Licensing and remaining uncertainty
 
 The official DevKit's custom Noncommercial v1.0 license restricts employer/business/client development, testing and operation even without charging. Do not copy its code, wording or assets. Independent interface interoperability is distinct from permission to operate a commercial or remotely hosted service; remote/paid applications may require a separate approval path.

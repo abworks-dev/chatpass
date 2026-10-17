@@ -23,7 +23,7 @@ uv run chatpass web --compatibility-mode strict
 
 ## 支持矩阵
 
-以下是实现及模拟验证范围，并非完整真实上游兼容保证。**已知真实上游缺口：** 工具调用已在 `response.output_item.done` 中返回，但终帧 `response.completed.response.output` 可为空；当前聚合器只使用终帧，因此非流式可能丢失输出，Chat 终态核对也可能失败。此缺口尚未修复，暂优先使用原生流式 Responses。
+以下是实现及模拟验证范围，并非完整真实上游兼容保证。**空终帧聚合修复：** 最终 `output` 为空时，使用连续索引的 `response.output_item.done` 完成项重建；必须有成功 `response.completed`，不从增量或 EOF 推断成功。非空终帧须与完成项一致；身份冲突、重复调用 ID、缺失完成项会明确失败。已加入非流式／Chat 与工具结果回传的模拟回归，新版真实客户端验收仍待进行，原生流式 Responses 仍是推荐选项。
 
 | 能力 | 原生 Responses | Chat 桥接 |
 | --- | --- | --- |
@@ -34,7 +34,9 @@ uv run chatpass web --compatibility-mode strict
 | JSON / JSON Schema | `text.format` | `response_format` 转换；`reasoning_effort` 转 reasoning |
 | `stream_options.include_usage` | 转发流没有额外合成 usage 帧 | 成功结束前发 usage 帧 |
 | `previous_response_id`、后台任务、服务器引用 | 拒绝（即使 null/false） | 拒绝 |
-| 托管工具、旧式 `functions`、stop、多候选 | 不冒充支持 | 拒绝；仅 `n:1` 可在兼容模式过滤 |
+| 命名空间、`additional_tools` | 保留声明及调用 namespace；仅 function/custom 命名空间子工具 | 拒绝，避免命名空间丢失 |
+| 网页搜索 | 可转发声明和已完成调用历史，实际使用取决于模型／账号／工作区策略 | 不提供内置搜索桥接 |
+| 文件搜索、Code Interpreter、托管 MCP、`tool_search`、旧式 `functions`、stop、多候选 | 不冒充支持 | 拒绝；仅 `n:1` 可在兼容模式过滤 |
 | 拒绝、自定义工具或音频输出 | 原生透传/聚合 | 明确 `unsupported_response`，不假成功 |
 
 Chat 输入不接受非空 `refusal`、命名的普通消息及其他不能无损转换的字段。SDK assistant `refusal:null` / `tool_calls:null`、tool 消息 name 可接受；tool 的规范身份仍是调用 ID。依赖 reasoning 连续性的 Agent **优先选择原生 Responses**。
@@ -70,9 +72,9 @@ Hermes、OpenClaw、DeepSeek Harness 均需记录实际版本、provider API 类
 | --- | --- | --- | --- | --- | --- | --- |
 | Hermes（待填） | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | OpenClaw（待填） | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 |
-| DSH（待填） | 历史有限成功，需重验新版 | 未测；已知终帧输出空缺口 | 未测 | 历史有限成功，需重验新版 | 旧会话问题未定位 | 未完成新版验收 |
+| DSH（待填） | 历史有限成功，需重验新版 | 重建已模拟验证，真实未测 | 未测 | 历史有限成功，需重验新版 | 旧会话问题未定位 | 未完成新版验收 |
 
-记录日期、源码版本、客户端版本、实际模型 ID、接口类型、stream 模式及忽略字段名。每一项先只发一个短请求，再由你决定是否做下一项；达到额度、授权错误或截断时暂停，不自动重放。非流式／Chat 的空终帧聚合缺口仍是验收风险，不能用本轮生命周期测试关闭它。
+记录日期、源码版本、客户端版本、实际模型 ID、接口类型、stream 模式及忽略字段名。每一项先只发一个短请求，再由你决定是否做下一项；达到额度、授权错误或截断时暂停，不自动重放。非流式／Chat 的空终帧重建修复仍需新版真实验收，不能用模拟测试或历史生命周期测试宣称真实兼容。
 
 ## 排错与报告
 

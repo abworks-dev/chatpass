@@ -88,7 +88,7 @@ API: native streaming Responses
 
 If you changed the startup port, update the API address too. The gateway key **is not an OpenAI API key or OAuth token**: it works only through the running ChatPass gateway. Do not paste subscription credentials into clients or assume a model name without querying the catalog.
 
-The current source supports streaming/nonstreaming Responses and Chat Completions; prefer native streaming Responses. Limited authorized probes and user feedback established fresh DSH conversation success, not universal client or protocol acceptance. A known empty-terminal-output aggregation gap remains unresolved. Verify Hermes, OpenClaw and DSH versions, histories and tool turns separately; see [client acceptance](docs/clients.md).
+The current source supports streaming/nonstreaming Responses and Chat Completions; prefer native streaming Responses. Limited authorized probes and user feedback established fresh DSH conversation success, not universal client or protocol acceptance. Completed-item reconstruction for empty terminal output now has local mock coverage; updated live acceptance remains pending. Verify Hermes, OpenClaw and DSH versions, histories and tool turns separately; see [client acceptance](docs/clients.md).
 
 ## How it differs from subscription relay platforms
 
@@ -109,11 +109,11 @@ For example, [Sub2API](https://github.com/Wei-Shaw/sub2api) targets subscription
 The current source provides `GET /v1/models`, `POST /v1/responses` and `POST /v1/chat/completions`. It is not a complete OpenAI compatibility layer, a publication claim or universal live-client acceptance.
 
 - Both inference interfaces can stream or aggregate JSON. Upstream always uses `stream:true`, `store:false`; only `response.completed` proves success.
-- Send full history. `previous_response_id`, background work, server-state references and hosted tools are unsupported.
-- Native Responses preserves function/custom tools and opaque reasoning history; Chat has a narrower supported subset. `system` is normalized to `developer`.
+- Send full history. `previous_response_id`, background work, server-state references, file search, Code Interpreter and hosted MCP are unsupported. Native Responses permits web-search requests subject to model and account/workspace policy.
+- Native Responses preserves function/custom tools, namespaces, `additional_tools` and opaque reasoning history. Chat supports a narrower ordinary-function subset and explicitly rejects namespaced/custom tools. `system` is normalized to `developer`.
 - Default compatible mode omits listed unsupported tuning fields and reports names in `X-ChatPass-Ignored-Fields`; omitted output limits are not enforced. Choose `--compatibility-mode strict` to reject them.
 
-The observed case of output-item events followed by empty terminal `output` remains unresolved. Mock success does not prove complete live nonstreaming/Chat compatibility.
+Empty terminal `output` is reconstructed from contiguous `response.output_item.done` snapshots, still requiring successful `response.completed`. Conflicts, duplicate identities, missing items and interrupted streams cannot establish success. Local regressions cover this repair; updated live upstream/client acceptance remains pending. Native `reasoning`, `text` and `include` fields are preserved; general API documentation alone does not justify enabling SIWC-restricted tuning.
 
 ### Credential and access security
 
