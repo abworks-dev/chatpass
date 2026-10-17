@@ -17,6 +17,7 @@ state.enc
 state.lock
 
 # Common build and dependency outputs
+.pnpm-store/
 node_modules/
 dist/
 build/

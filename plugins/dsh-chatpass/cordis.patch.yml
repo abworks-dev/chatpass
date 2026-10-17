@@ -1,0 +1,4 @@
+# Adds a provider only. Does not change any current default model/search route.
+- insert:
+    - id: llm-chatpass
+      name: dsh-chatpass

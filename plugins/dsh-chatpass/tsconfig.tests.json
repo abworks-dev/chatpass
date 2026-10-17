@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "lib": ["ES2023", "DOM", "DOM.Iterable"], "noEmit": true, "emitDeclarationOnly": false },
+  "include": ["src", "tests"]
+}

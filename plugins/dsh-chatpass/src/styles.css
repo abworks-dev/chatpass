@@ -1,0 +1,20 @@
+/* Change Necessity: approved two-entry settings UI; shared form/store avoids duplicate owners.
+   Complexity: native controls/dialog; one nonsecret in-memory tab draft, local modal draft;
+   expiry timer changes display only; no router, disk/browser persistence, or remote resources. */
+.chatpass-ui { color: inherit; font: inherit; line-height: 1.5; min-width: 0; }
+.chatpass-ui h2, .chatpass-ui h3 { margin: .5rem 0; font-size: 1.05rem; }
+.chatpass-ui p { margin: .6rem 0; overflow-wrap: anywhere; }
+.chatpass-ui small { opacity: .85; display: block; }
+.chatpass-ui fieldset { border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: .5rem; padding: .8rem; margin: 1rem 0; min-width: 0; }
+.chatpass-ui label { display: block; margin-top: .5rem; }
+.chatpass-ui input { box-sizing: border-box; display: block; width: 100%; min-width: 0; padding: .45rem .6rem; margin: .25rem 0; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: .3rem; background: transparent; color: inherit; font: inherit; }
+.chatpass-ui button { font: inherit; color: inherit; background: transparent; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: .35rem; padding: .4rem .7rem; cursor: pointer; }
+.chatpass-ui button:disabled { opacity: .5; cursor: not-allowed; }
+.chatpass-ui :focus-visible { outline: 2px solid Highlight; outline-offset: 3px; }
+.chatpass-ui summary { cursor: pointer; padding: .5rem 0; }
+.chatpass-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: .7rem 0; }
+.chatpass-capacity { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .7rem; }
+.chatpass-models { max-height: 12rem; overflow: auto; padding-inline-start: 1.4rem; overflow-wrap: anywhere; }
+.chatpass-card { border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: .6rem; padding: 1rem; }
+.chatpass-dialog { color: CanvasText; background: Canvas; color-scheme: light dark; border: 1px solid GrayText; border-radius: .6rem; width: min(40rem, calc(100vw - 3rem)); max-height: calc(100dvh - 3rem); padding: 1rem; overflow: auto; }
+.chatpass-dialog::backdrop { background: rgb(0 0 0 / 45%); }

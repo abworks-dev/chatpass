@@ -1,0 +1,2 @@
+# pnpm 11 reads workspace configuration here (not .npmrc).
+nodeLinker: hoisted
