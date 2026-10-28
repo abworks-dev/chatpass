@@ -154,7 +154,7 @@ async def test_real_browser_console_security_and_key_flow(tmp_path):
                 with store.transaction() as state:
                     state["credentials"]["expires_at"] = 1
                 await page.locator("#refresh-status").click()
-                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '凭据已过期'")
+                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '已登录，待刷新'")
                 assert await page.locator("#setup-card").is_visible()
                 assert await page.locator("#metric-account-note").is_visible()
                 assert await page.locator("#setup-account-action").get_attribute("data-go") == "models"
@@ -162,20 +162,32 @@ async def test_real_browser_console_security_and_key_flow(tmp_path):
                 with store.transaction() as state:
                     state["credentials"]["earliest_refresh_at"] = time.time() + 90
                 await page.locator("#refresh-status").click()
-                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '等待刷新窗口'")
+                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '已登录，等待刷新窗口'")
                 assert await page.locator("#load-models").is_disabled()
                 assert "不会提前刷新" in await page.locator("#metric-account-note").text_content()
+                assert await page.locator("#setup-account-action").get_attribute("data-go") == "models"
+                assert await page.locator("#start-login").is_disabled()
+                assert "已有账号授权" in await page.locator("#setup-account h3").text_content()
+                with store.transaction() as state:
+                    state["refresh_in_progress"] = True
+                await page.locator("#refresh-status").click()
+                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '已登录，刷新结果不确定'")
+                assert "不能盲目重放" in await page.locator("#metric-account-note").text_content()
+                assert await page.locator("#start-login").is_enabled()
                 with store.transaction() as state:
                     state["pending_tokens"] = {"kind": "login", "isolated_test": True}
                 await page.locator("#refresh-status").click()
                 await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '待验证'")
                 assert await page.locator("#load-models").is_enabled()
                 assert "查询模型" in await page.locator("#setup-account-action").text_content()
+                assert await page.locator("#start-login").is_disabled()
+                assert not any(url.endswith("/admin/api/login") for url in resources)
                 with store.transaction() as state:
+                    state.pop("refresh_in_progress")
                     state.pop("pending_tokens")
                     state["credentials"].pop("earliest_refresh_at")
                 await page.locator("#refresh-status").click()
-                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '凭据已过期'")
+                await page.wait_for_function("() => document.querySelector('#metric-account').textContent === '已登录，待刷新'")
                 await page.locator("#setup-account-action").click()
                 assert await page.locator("#page-title").text_content() == "模型目录"
                 assert not calls
@@ -235,8 +247,13 @@ async def test_real_browser_console_security_and_key_flow(tmp_path):
                 await client_eye.click()
                 assert await client_key.get_attribute('type') == 'password'
                 await page.evaluate("Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } })")
+                heading_before = await page.locator('.page-heading').bounding_box()
                 await page.locator('#copy-client-key').click()
                 assert '浏览器未允许复制' in await page.locator('#error-notice').text_content()
+                assert await page.locator('.page-heading').bounding_box() == heading_before
+                assert await page.locator('#error-notice').evaluate("el => getComputedStyle(el).position") == 'fixed'
+                await page.get_by_role('button', name='关闭提示').click()
+                assert not await page.locator('#error-notice').is_visible()
                 assert await client_key.input_value() == successor
                 await page.reload()
                 await page.wait_for_function("key => document.querySelector('#client-api-key').value === key", arg=successor)
@@ -249,6 +266,14 @@ async def test_real_browser_console_security_and_key_flow(tmp_path):
                 assert "不支持 Chat Completions" not in guidance
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 390, "height": 844})
+                await page.evaluate("Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } })")
+                await page.locator('#copy-client-key').click()
+                await page.locator('#error-notice').wait_for(state='visible')
+                await page.wait_for_timeout(200)
+                toast_box = await page.locator('#error-notice').bounding_box()
+                assert toast_box['x'] >= 0 and toast_box['x'] + toast_box['width'] <= 390
+                assert toast_box['y'] >= 0
+                await page.get_by_role('button', name='关闭提示').click()
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await client_eye.click()
                 assert await client_key.get_attribute('type') == 'text'

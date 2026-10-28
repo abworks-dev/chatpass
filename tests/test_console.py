@@ -73,6 +73,19 @@ async def authorize(client):
     return {"Origin": ORIGIN, "X-ChatPass-CSRF": response.json()["csrf_token"]}
 
 
+@pytest.mark.parametrize("pending", [False, True])
+def test_refresh_uncertainty_is_distinct_from_saved_successor(pending):
+    from chatpass.console import credential_status
+
+    state = {"credentials": {"expires_at": 0}, "refresh_in_progress": True}
+    if pending:
+        state["pending_tokens"] = {"kind": "refresh"}
+    result = credential_status(state)
+    assert result["account_signed_in"] is True
+    assert result["refresh_uncertain"] is (not pending)
+    assert result["pending_token_validation"] is pending
+
+
 async def test_bootstrap_cookie_single_use_and_no_privileged_json(setup):
     response = await setup.client.post("/admin/api/session", json={"token": BOOTSTRAP},
                                        headers={"Origin": ORIGIN})

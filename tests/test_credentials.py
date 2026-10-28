@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+import httpx
 import pytest
 from test_storage import MemoryKeyring
 
@@ -228,6 +229,101 @@ async def test_initial_pending_login_recovers_without_refresh(tmp_path):
     oauth.fail_validation = False
     assert await credentials.get_access_token() == "candidate"
     assert oauth.calls == 0
+
+
+@pytest.mark.parametrize("failure_stage", ["discovery", "connect", "connect_timeout", "pool"])
+def test_offline_refresh_survives_process_restart(tmp_path, failure_stage):
+    from chatpass.oauth import ISSUER, OAuthClient
+
+    store = make_store(tmp_path)
+    offline = True
+    submissions = []
+
+    def handler(request):
+        if request.method == "GET":
+            if offline and failure_stage == "discovery":
+                raise httpx.ReadTimeout("metadata unavailable", request=request)
+            return httpx.Response(200, json={
+                "issuer": ISSUER,
+                "authorization_endpoint": ISSUER + "/authorize",
+                "token_endpoint": ISSUER + "/token",
+                "jwks_uri": ISSUER + "/jwks",
+            })
+        if offline:
+            error = {"connect": httpx.ConnectError, "connect_timeout": httpx.ConnectTimeout,
+                     "pool": httpx.PoolTimeout}[failure_stage]
+            raise error("not submitted", request=request)
+        submissions.append(request.content)
+        return httpx.Response(200, json={"access_token": "new", "refresh_token": "rotating-new"})
+
+    def new_credentials():
+        oauth = OAuthClient(httpx.Client(transport=httpx.MockTransport(handler)))
+        oauth.validate_tokens = FakeOAuth().validate_tokens
+        return Credentials(StateStore(tmp_path, backend=store._backend), oauth)
+
+    with pytest.raises(OAuthError, match="upstream_unavailable"):
+        new_credentials()._get_access_token()
+    saved = store.read()
+    assert "refresh_in_progress" not in saved
+    assert "login_required" not in saved
+    assert saved["credentials"]["refresh_token"] == "rotating-old"
+    offline = False
+    assert new_credentials()._get_access_token() == "new"
+    assert len(submissions) == 1
+    assert store.read()["credentials"]["refresh_token"] == "rotating-new"
+
+
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout, httpx.WriteTimeout,
+                                    httpx.ReadError, httpx.WriteError])
+def test_submitted_refresh_failure_stays_uncertain_after_restart(tmp_path, failure):
+    from chatpass.oauth import ISSUER, OAuthClient
+
+    store = make_store(tmp_path)
+    calls = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={
+                "issuer": ISSUER, "authorization_endpoint": ISSUER + "/authorize",
+                "token_endpoint": ISSUER + "/token", "jwks_uri": ISSUER + "/jwks",
+            })
+        calls.append(request)
+        raise failure("unknown submission result", request=request)
+
+    oauth = OAuthClient(httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(OAuthError, match="upstream_unavailable"):
+        Credentials(store, oauth)._get_access_token()
+    reopened = StateStore(tmp_path, backend=store._backend)
+    with pytest.raises(OAuthError, match="login_required"):
+        Credentials(reopened, oauth)._get_access_token()
+    assert len(calls) == 1
+    assert reopened.read()["refresh_in_progress"] is True
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_saved_account_survives_normal_restart(tmp_path, expired):
+    store = make_store(tmp_path)
+    if not expired:
+        with store.transaction() as state:
+            state["credentials"]["expires_at"] = time.time() + 3600
+    reopened = StateStore(tmp_path, backend=store._backend)
+    oauth = FakeOAuth()
+    assert Credentials(reopened, oauth)._get_access_token() == ("new" if expired else "old")
+    assert oauth.calls == int(expired)
+    assert "login_required" not in reopened.read()
+
+
+def test_saved_refresh_successor_recovers_after_restart(tmp_path):
+    store = make_store(tmp_path)
+    oauth = FakeOAuth()
+    oauth.fail_validation = True
+    with pytest.raises(OAuthError, match="identity_verification_unavailable"):
+        Credentials(store, oauth)._get_access_token()
+    reopened = StateStore(tmp_path, backend=store._backend)
+    recovered = FakeOAuth()
+    assert Credentials(reopened, recovered)._get_access_token() == "new"
+    assert recovered.calls == 0
+    assert "refresh_in_progress" not in reopened.read()
 
 
 def test_checkpoint_requires_active_transaction(tmp_path):

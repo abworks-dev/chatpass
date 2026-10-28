@@ -49,6 +49,8 @@ uv run --locked --no-dev --system-certs chatpass web --port 19841 --no-browser
 
 The Windows launcher also accepts `--port 19841 --no-browser`, but forwards only `web` arguments. Use the CLI directly for other subcommands and global options.
 
+For `WinError 10054` in Windows Proactor connection cleanup, you can opt into `start.cmd --event-loop selector` for diagnosis (the default remains `auto`). This does not fix explicit upstream error events. See the [stream failure and connection cleanup guide](docs/stream-failure-troubleshooting.md).
+
 ### 3. Authorize and get connection details
 
 1. Create a key under **Gateway key**, then copy it and store it securely.

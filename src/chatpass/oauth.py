@@ -24,11 +24,17 @@ CLIENT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 
 
 class OAuthError(RuntimeError):
-    def __init__(self, code: str = "authorization_failed", *, verified_identity: dict | None = None):
+    def __init__(self, code: str = "authorization_failed", *, verified_identity: dict | None = None,
+                 field: str | None = None):
         self.code = code
+        self.field = field
         # Private recovery evidence, never included in exception text or public errors.
         self.verified_identity = verified_identity
         super().__init__("Authorization failed (" + code + ").")
+
+
+class RefreshNotSent(OAuthError):
+    """Refresh failed before token submission; the predecessor is safe to retry."""
 
 
 @dataclass(frozen=True)
@@ -83,9 +89,11 @@ class OAuthClient:
         if self._owns_client:
             self.client.close()
 
-    def _json(self, method: str, url: str, **kwargs) -> dict:
+    def _json(self, method: str, url: str, *, refresh_request: bool = False, **kwargs) -> dict:
+        response_started = False
         try:
             with self.client.stream(method, url, **kwargs) as response:
+                response_started = True
                 chunks = bytearray()
                 for chunk in response.iter_bytes():
                     chunks.extend(chunk)
@@ -114,6 +122,12 @@ class OAuthClient:
                 if not isinstance(result, dict):
                     raise OAuthError("invalid_server_response")
                 return result
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            # These failures precede submission. Read/write failures, HTTP responses
+            # and malformed successful bodies remain ambiguous and must not replay.
+            if refresh_request and not response_started:
+                raise RefreshNotSent("upstream_unavailable") from None
+            raise OAuthError("upstream_unavailable") from None
         except (httpx.HTTPError, ValueError):
             raise OAuthError("upstream_unavailable") from None
 
@@ -201,9 +215,16 @@ class OAuthClient:
             raise OAuthError("revocation_unconfirmed") from None
 
     def refresh(self, client_id: str, refresh_token: str) -> dict:
+        try:
+            endpoint = self.discover()["token_endpoint"]
+        except OAuthError as exc:
+            # A new process has no discovery cache. Offline startup must not turn
+            # this metadata GET failure into an uncertain token rotation.
+            raise RefreshNotSent(exc.code) from None
         return self._json(
             "POST",
-            self.discover()["token_endpoint"],
+            endpoint,
+            refresh_request=True,
             data={
                 "grant_type": "refresh_token",
                 "client_id": client_id,
@@ -231,6 +252,10 @@ class OAuthClient:
                 and k.get("kty") == "RSA"
                 and k.get("use", "sig") == "sig"
             ]
+            if not matching:
+                # A newly rotated signing key may not yet be published by JWKS.
+                # Keep the encrypted successor for later verification, not use.
+                raise OAuthError("identity_verification_unavailable")
             if len(matching) != 1:
                 raise OAuthError("invalid_id_token")
             key = jwt.PyJWK.from_dict(matching[0], algorithm="RS256").key
@@ -312,7 +337,7 @@ class OAuthClient:
                 or len(body[field]) > 65536
                 or any(ord(char) < 33 or ord(char) > 126 for char in body[field])
             ):
-                raise OAuthError("invalid_token_response")
+                raise OAuthError("invalid_token_response", field=field)
         expiry = body.get("expires_in")
         if (
             isinstance(expiry, bool)
@@ -320,9 +345,9 @@ class OAuthClient:
             or not math.isfinite(expiry)
             or not 0 < expiry <= 31536000
         ):
-            raise OAuthError("invalid_token_response")
+            raise OAuthError("invalid_token_response", field="expires_in")
         if not isinstance(body.get("token_type"), str) or body["token_type"].lower() != "bearer":
-            raise OAuthError("invalid_token_response")
+            raise OAuthError("invalid_token_response", field="token_type")
         earliest = body.get("earliest_refresh_at", 0)
         if isinstance(earliest, str):
             try:
@@ -330,14 +355,14 @@ class OAuthClient:
 
                 earliest = datetime.fromisoformat(earliest.replace("Z", "+00:00")).timestamp()
             except ValueError:
-                raise OAuthError("invalid_token_response") from None
+                raise OAuthError("invalid_token_response", field="earliest_refresh_at") from None
         if (
             isinstance(earliest, bool)
             or not isinstance(earliest, (int, float))
             or not math.isfinite(earliest)
             or earliest < 0
         ):
-            raise OAuthError("invalid_token_response")
+            raise OAuthError("invalid_token_response", field="earliest_refresh_at")
         return {
             "client_id": client_id,
             "subject": subject,

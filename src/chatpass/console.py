@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import gateway
 from .login import login
 from .oauth import OAuthError
+from .refresh_diagnostics import public_diagnostic
 from .storage import StateStore, StorageError
 
 _BODY_LIMIT = 4096
@@ -233,7 +234,7 @@ class _ConsoleBoundary:
                 self.state.failed += int(failed)
 
 
-def credential_status(state: dict[str, Any], *, now: float | None = None) -> dict[str, bool | int]:
+def credential_status(state: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
     """Pure sanitized credential presentation shared with the CLI status command."""
     current = state.get("credentials", {})
     clock = time.time() if now is None else now
@@ -252,11 +253,13 @@ def credential_status(state: dict[str, Any], *, now: float | None = None) -> dic
         <= (time.time() if now is None else now),
         "pending_token_validation": "pending_tokens" in state,
         "login_required": bool(state.get("login_required") or state.get("refresh_in_progress")),
+        "refresh_uncertain": bool(state.get("refresh_in_progress")) and not state.get("login_required", False) and "pending_tokens" not in state,
+        "refresh_diagnostic": public_diagnostic(state.get("refresh_diagnostic")),
         "registration_configured": bool(state.get("registration", {}).get("client_id")),
     }
 
 
-def _snapshot(store: StateStore) -> dict[str, bool | int]:
+def _snapshot(store: StateStore) -> dict[str, Any]:
     return credential_status(store.read() if store.path.exists() else {})
 
 

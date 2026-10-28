@@ -49,6 +49,8 @@ uv run --locked --no-dev --system-certs chatpass web --port 19841 --no-browser
 
 Windows 启动脚本也可传入 `--port 19841 --no-browser`，但只转发 `web` 参数；其他子命令和全局参数请直接使用 CLI。
 
+遇到 Windows Proactor 连接关闭时的 `WinError 10054`，可选择 `start.cmd --event-loop selector` 排查（默认仍为 `auto`）；这不修复上游明确返回的错误。详见[流失败与连接关闭排错](docs/stream-failure-troubleshooting.md)。
+
 ### 3. 授权并获取接入信息
 
 1. 在「网关密钥」中创建密钥，复制后妥善保管。

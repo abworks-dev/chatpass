@@ -7,7 +7,8 @@ import time
 
 import portalocker
 
-from .oauth import OAuthClient, OAuthError
+from .oauth import OAuthClient, OAuthError, RefreshNotSent
+from .refresh_diagnostics import REJECTED_CODES, record
 from .storage import StateStore
 
 
@@ -35,9 +36,18 @@ class Credentials:
                 received_at=pending["received_at"],
             )
         except OAuthError as exc:
+            refresh_candidate = not self._is_login_candidate(pending)
             if exc.code == "identity_verification_unavailable":
                 # The replacement refresh token must survive temporary JWKS failures.
+                if refresh_candidate:
+                    record(state, "pending_validation", "validation", exc)
+                    self.store.checkpoint(state)
                 raise
+            if refresh_candidate:
+                record(state, "validation_failed", "validation", exc)
+                # We received a response; this is not an uncertain submission.
+                # login_required below still prevents use of the predecessor.
+                state.pop("refresh_in_progress", None)
             state.pop("pending_tokens", None)
             if (self._is_login_candidate(pending) and exc.code == "scope_not_authorized"
                     and exc.verified_identity is not None and not state.get("credentials")
@@ -61,6 +71,10 @@ class Credentials:
                 and current.get("id_token")):
             validated["id_token"] = current["id_token"]
         state["credentials"] = validated
+        if not self._is_login_candidate(pending):
+            record(state, "succeeded", "complete")
+        else:
+            state.pop("refresh_diagnostic", None)
         state.pop("signed_in_identity", None)
         if isinstance(state.get("registration"), dict):
             state["registration"]["subject"] = validated["subject"]
@@ -121,8 +135,26 @@ class Credentials:
             # Checkpoint before the POST: a crash or ambiguous network failure must not
             # replay a rotating predecessor. Only interactive re-login can resolve it.
             state["refresh_in_progress"] = True
+            record(state, "started", "request")
             self.store.checkpoint(state)
-            body = self.oauth.refresh(current["client_id"], current["refresh_token"])
+            try:
+                body = self.oauth.refresh(current["client_id"], current["refresh_token"])
+            except RefreshNotSent as exc:
+                # Only explicit transport evidence that no token was submitted can
+                # undo the checkpoint. Never infer this from a generic network error.
+                state.pop("refresh_in_progress", None)
+                record(state, "not_sent", "request", exc)
+                self.store.checkpoint(state)
+                raise
+            except OAuthError as exc:
+                if exc.code in REJECTED_CODES:
+                    state.pop("refresh_in_progress", None)
+                    state["login_required"] = True
+                    record(state, "rejected", "request", exc)
+                else:
+                    record(state, "uncertain", "request", exc)
+                self.store.checkpoint(state)
+                raise
             state["pending_tokens"] = {
                 "kind": "refresh",
                 "body": body,
@@ -168,7 +200,7 @@ class Credentials:
                         elif current.get("subject"):
                             registration["subject"] = current["subject"]
                     for name in ("credentials", "pending_tokens", "refresh_in_progress",
-                                 "login_required", "signed_in_identity"):
+                                 "login_required", "signed_in_identity", "refresh_diagnostic"):
                         state.pop(name, None)
                     # Commit before reporting local success; storage failure propagates.
                     self.store.checkpoint(state)

@@ -102,7 +102,19 @@
     byId('notice').hidden = true;
     byId('error-notice').hidden = true;
     const target = byId(error ? 'error-notice' : 'notice');
-    target.textContent = message;
+    const text = document.createElement('span');
+    text.className = 'notice-message';
+    text.textContent = message;
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'notice-dismiss';
+    dismiss.setAttribute('aria-label', '关闭提示');
+    dismiss.textContent = '×';
+    dismiss.addEventListener('click', () => {
+      window.clearTimeout(noticeTimer);
+      target.hidden = true;
+    });
+    target.replaceChildren(text, dismiss);
     target.hidden = false;
     if (!error) noticeTimer = window.setTimeout(() => { target.hidden = true; }, 7000);
   }
@@ -196,8 +208,9 @@
     const running = state.status && state.status.login.state === 'running';
     byId('show-login-link').disabled = !ready || !running || loginLinkBusy;
     if (!running) clearLoginLink();
-    byId('start-login').disabled = !ready || state.loginBusy || running;
-    byId('start-login').textContent = state.loginBusy || running ? '授权正在进行…' : '打开浏览器授权';
+    const recoverSaved = state.status && (state.status.pending_token_validation || (state.status.account_authorized && !state.status.login_required));
+    byId('start-login').disabled = !ready || state.loginBusy || running || recoverSaved;
+    byId('start-login').textContent = state.loginBusy || running ? '授权正在进行…' : recoverSaved ? '已有授权，无需重复授权' : '打开浏览器授权';
     byId('init-key').disabled = !ready || state.keyBusy || state.status.gateway_key_configured;
     byId('rotate-key').disabled = !ready || state.keyBusy || !state.status.gateway_key_configured;
     byId('confirm-rotate').disabled = !ready || state.keyBusy;
@@ -272,7 +285,8 @@
   function validStatus(data) {
     const flags = ['gateway_key_configured', 'account_authorized', 'access_token_expired', 'pending_token_validation', 'login_required', 'registration_configured', 'account_signed_in', 'plan_use_enabled'];
     const counts = ['uptime_seconds', 'requests_total', 'requests_failed', 'requests_active'];
-    if (!data || flags.some((key) => typeof data[key] !== 'boolean') ||
+    // Older running gateways may omit this additive diagnostic field.
+    if (!data || (data.refresh_uncertain !== undefined && typeof data.refresh_uncertain !== 'boolean') || flags.some((key) => typeof data[key] !== 'boolean') ||
         counts.some((key) => !Number.isFinite(data[key]) || data[key] < 0) ||
         !Number.isInteger(data.refresh_wait_seconds) || data.refresh_wait_seconds < 0 || data.refresh_wait_seconds > 31536000 ||
         !data.login || !['idle', 'running', 'succeeded', 'failed'].includes(data.login.state) ||
@@ -282,13 +296,32 @@
       return url.origin === window.location.origin && url.pathname.replace(/\/$/, '') === '/v1' && !url.search && !url.hash && !url.username && !url.password;
     } catch { return false; }
   }
+  function refreshFailureNote(data) {
+    const diagnostic = data.refresh_diagnostic;
+    if (!diagnostic || typeof diagnostic !== 'object') return '';
+    const reasons = {
+      invalid_token_response: '刷新响应不符合协议', invalid_id_token: '身份令牌验证失败',
+      id_token_not_yet_valid: '身份令牌时间超前，请检查系统时钟',
+      scope_not_authorized: '刷新响应缺少计划使用权限', account_mismatch: '刷新响应账号不匹配',
+      invalid_grant: '上游拒绝刷新授权', invalid_client: '上游拒绝客户端注册',
+      refresh_token_expired: '上游确认刷新令牌过期', refresh_token_reused: '上游确认刷新令牌已使用',
+      refresh_token_invalidated: '上游确认刷新令牌已失效',
+      identity_verification_unavailable: '身份验证公钥暂不可用，已保留新凭据，稍后查询模型可恢复验证'
+    };
+    const reason = reasons[diagnostic.code];
+    if (!reason) return '';
+    const fields = {access_token: 'access_token', refresh_token: 'refresh_token', expires_in: 'expires_in', token_type: 'token_type', earliest_refresh_at: 'earliest_refresh_at'};
+    return reason + (fields[diagnostic.field] ? '（字段：' + fields[diagnostic.field] + '）' : '') + '。';
+  }
   function accountPresentation(data) {
-    if (data.pending_token_validation) return ['待验证', '凭据已加密保留；恢复后手动查询模型验证', 'warning'];
-    if (data.login_required) return ['需要授权', '请在官方浏览器中完成授权', 'warning'];
+    const failureNote = refreshFailureNote(data);
+    if (data.pending_token_validation) return ['待验证', failureNote || '凭据已加密保留；恢复后手动查询模型验证', 'warning'];
+    if (data.refresh_uncertain) return ['已登录，刷新结果不确定', '上次刷新可能已轮换凭据，不能盲目重放旧刷新令牌。需要你手动重新授权恢复；不会自动发起授权。', 'warning'];
+    if (data.login_required) return ['需要重新授权', failureNote + '已保存的授权不可继续使用，请手动在官方浏览器中重新授权。' + (!data.refresh_diagnostic ? '旧版本未记录失败原因，不能据此判断是断网还是响应验证失败。' : ''), 'warning'];
     if (data.account_signed_in && !data.plan_use_enabled) return ['已登录，计划未授权', '身份已验证，但没有计划使用权限；仅在你决定后重新发起授权，不会调用模型或切换付费 API。', 'warning'];
-    if (data.access_token_expired && data.refresh_wait_seconds > 0) return ['等待刷新窗口', '还需等待约 ' + data.refresh_wait_seconds + ' 秒才能刷新。请刷新状态更新等待时间；不会提前刷新或自动重试。', 'warning'];
+    if (data.access_token_expired && data.refresh_wait_seconds > 0) return ['已登录，等待刷新窗口', '已有授权，无需重复登录。还需等待约 ' + data.refresh_wait_seconds + ' 秒才能刷新。请刷新状态更新等待时间；不会提前刷新或自动重试。', 'warning'];
     if (!data.account_authorized) return ['尚未授权', '点击授权后由你确认', 'warning'];
-    if (data.access_token_expired) return ['凭据已过期', '实际请求时尝试刷新，不保证可用', 'warning'];
+    if (data.access_token_expired) return ['已登录，待刷新', '访问令牌已过期，但已保存账号授权，无需重复登录。手动查询模型或实际请求时尝试刷新，不保证可用。', 'warning'];
     return ['已保存授权', '未验证账号资格、额度或模型可用性', 'success'];
   }
   function uptime(seconds) {
@@ -325,8 +358,10 @@
     byId('overview-grid').classList.toggle('setup-complete', setupComplete);
     const waitingRefresh = data.access_token_expired && data.refresh_wait_seconds > 0 && !data.pending_token_validation;
     const queryToVerify = data.pending_token_validation || (data.access_token_expired && !data.login_required && !waitingRefresh);
+    const savedRecovery = data.pending_token_validation || (data.account_authorized && !data.login_required);
+    byId('setup-account').querySelector('h3').textContent = savedRecovery ? '已有账号授权' : '账号授权';
     const accountAction = byId('setup-account-action');
-    accountAction.dataset.go = queryToVerify && !loginRunning ? 'models' : 'authorization';
+    accountAction.dataset.go = (queryToVerify || (waitingRefresh && savedRecovery)) && !loginRunning ? 'models' : 'authorization';
     accountAction.textContent = loginRunning ? '查看进度 →' : waitingRefresh ? '查看等待状态 →' : queryToVerify ? '查询模型 →' : '前往授权 →';
     byId('metric-uptime').textContent = uptime(data.uptime_seconds);
     byId('metric-requests').textContent = Math.floor(data.requests_total).toLocaleString('zh-CN');

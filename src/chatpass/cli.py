@@ -51,8 +51,16 @@ def main(argv=None) -> int:
     web.add_argument("--port", type=int, default=19840)
     web.add_argument("--no-browser", action="store_true")
     for command in (serve, web):
+        command.add_argument(
+            "--max-concurrency", type=int, default=Settings.max_concurrency,
+            help="Maximum simultaneous gateway requests (1-64); use 2 for troubleshooting",
+        )
         command.add_argument("--compatibility-mode", choices=("compatible", "strict"),
                              default="compatible", help="Filter unsupported tuning fields or reject them")
+        command.add_argument(
+            "--event-loop", choices=("auto", "selector"), default="auto",
+            help="Opt-in Selector loop for Windows connection cleanup issues (default: auto)",
+        )
         for flag, default, help_text in (
             ("preparation-timeout", Settings.timeout_seconds,
              "Authentication/preparation/catalog budget in seconds"),
@@ -71,6 +79,7 @@ def main(argv=None) -> int:
         if args.command in ("serve", "web"):
             settings = Settings(
                 data_dir=args.data_dir, host=args.host, port=args.port,
+                max_concurrency=args.max_concurrency,
                 compatibility_mode=args.compatibility_mode,
                 timeout_seconds=args.preparation_timeout,
                 connect_timeout_seconds=args.connect_timeout,
@@ -78,6 +87,15 @@ def main(argv=None) -> int:
                 stream_idle_timeout_seconds=args.stream_idle_timeout,
                 stream_total_timeout_seconds=args.stream_total_timeout,
             )
+            server_loop = "auto"
+            if args.event_loop == "selector":
+                import uvicorn
+
+                # Older supported Uvicorn releases only accept built-in loop names.
+                # Keep their default behavior; never silently ignore an explicit opt-in.
+                if not callable(getattr(uvicorn.Config, "get_loop_factory", None)):
+                    raise ValueError("--event-loop selector requires Uvicorn 0.36 or newer.")
+                server_loop = "asyncio:SelectorEventLoop"
         store = StateStore(args.data_dir)
         if args.command == "key":
             issue = store.initialize_gateway_key if args.action == "init" else store.rotate_gateway_key
@@ -115,7 +133,7 @@ def main(argv=None) -> int:
                 print(url)
                 server = uvicorn.Server(uvicorn.Config(
                     app, host=settings.host, port=settings.port,
-                    access_log=False, log_level="warning"))
+                    access_log=False, log_level="warning", loop=server_loop))
                 if not args.no_browser:
                     threading.Thread(target=_open_console_when_ready,
                                      args=(server, url), daemon=True).start()
@@ -137,6 +155,7 @@ def main(argv=None) -> int:
                     port=settings.port,
                     access_log=False,
                     log_level="warning",
+                    loop=server_loop,
                 )
             finally:
                 credentials.oauth.close()
